@@ -53,3 +53,20 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# CMake / build
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.cmake
+compile_commands.json
+
+# Visual Studio
+.vs/
+out/
+
+# vcpkg
+vcpkg_installed/
+vcpkg/buildtrees/
+vcpkg/packages/

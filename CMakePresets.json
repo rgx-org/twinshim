@@ -1,0 +1,71 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-x86-mingw-release",
+      "displayName": "Windows x86 (MinGW-w64) Release",
+      "description": "Cross-compile Win32 (i686) from macOS/Linux via MinGW-w64 + vcpkg.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows-x86-mingw-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/mingw-w64-i686.cmake",
+        "VCPKG_TARGET_TRIPLET": "x86-mingw-static",
+        "VCPKG_APPLOCAL_DEPS": "OFF"
+      }
+    },
+    {
+      "name": "windows-x86-mingw-debug",
+      "displayName": "Windows x86 (MinGW-w64) Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows-x86-mingw-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/mingw-w64-i686.cmake",
+        "VCPKG_TARGET_TRIPLET": "x86-mingw-static",
+        "VCPKG_APPLOCAL_DEPS": "OFF"
+      }
+    },
+    {
+      "name": "windows-x64-mingw-release",
+      "displayName": "Windows x64 (MinGW-w64) Release",
+      "description": "Optional: cross-compile 64-bit Windows build.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows-x64-mingw-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/mingw-w64-x86_64.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-mingw-static",
+        "VCPKG_APPLOCAL_DEPS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-x86-mingw-release",
+      "configurePreset": "windows-x86-mingw-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-x86-mingw-debug",
+      "configurePreset": "windows-x86-mingw-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-x64-mingw-release",
+      "configurePreset": "windows-x64-mingw-release",
+      "configuration": "Release"
+    }
+  ]
+}
