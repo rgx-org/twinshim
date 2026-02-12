@@ -61,6 +61,8 @@ Linux (Debian/Ubuntu):
 
 `export VCPKG_ROOT=~/vcpkg`
 
+If `VCPKG_ROOT` is not set, the provided CMake presets automatically fall back to `~/vcpkg`.
+
 #### 3) Configure + build with preset
 
 `cmake --preset windows-x86-mingw-release`
@@ -68,6 +70,22 @@ Linux (Debian/Ubuntu):
 `cmake --build --preset windows-x86-mingw-release`
 
 Artifacts are emitted under `build/windows-x86-mingw-release`.
+
+### Staging package output (x86 MinGW release)
+
+Use the staging preset flow to produce only runtime binaries in a stable directory:
+
+`cmake --preset windows-x86-mingw-release-stage`
+
+`cmake --build --preset windows-x86-mingw-release-stage`
+
+`cmake --build --preset windows-x86-mingw-release-stage-install`
+
+Expected output path:
+
+- `stage/bin/hklm_wrapper.exe`
+- `stage/bin/hklm_shim.dll`
+- `stage/bin/hklmreg.exe`
 
 Optional presets:
 

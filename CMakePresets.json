@@ -15,7 +15,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/vcpkg-env-or-home.cmake",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/mingw-w64-i686.cmake",
         "VCPKG_TARGET_TRIPLET": "x86-mingw-static",
         "VCPKG_APPLOCAL_DEPS": "OFF"
@@ -29,7 +29,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/vcpkg-env-or-home.cmake",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/mingw-w64-i686.cmake",
         "VCPKG_TARGET_TRIPLET": "x86-mingw-static",
         "VCPKG_APPLOCAL_DEPS": "OFF"
@@ -44,10 +44,26 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/vcpkg-env-or-home.cmake",
         "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/mingw-w64-x86_64.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-mingw-static",
         "VCPKG_APPLOCAL_DEPS": "OFF"
+      }
+    },
+    {
+      "name": "windows-x86-mingw-release-stage",
+      "displayName": "Windows x86 (MinGW-w64) Release Staging",
+      "description": "Cross-compile Win32 (i686) and install runtime binaries into stage/bin.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows-x86-mingw-release-stage",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/vcpkg-env-or-home.cmake",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/mingw-w64-i686.cmake",
+        "VCPKG_TARGET_TRIPLET": "x86-mingw-static",
+        "VCPKG_APPLOCAL_DEPS": "OFF",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/stage"
       }
     }
   ],
@@ -66,6 +82,19 @@
       "name": "windows-x64-mingw-release",
       "configurePreset": "windows-x64-mingw-release",
       "configuration": "Release"
+    },
+    {
+      "name": "windows-x86-mingw-release-stage",
+      "configurePreset": "windows-x86-mingw-release-stage",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-x86-mingw-release-stage-install",
+      "configurePreset": "windows-x86-mingw-release-stage",
+      "configuration": "Release",
+      "targets": [
+        "install"
+      ]
     }
   ]
 }

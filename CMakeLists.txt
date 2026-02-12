@@ -132,4 +132,12 @@ else()
   endif()
   target_link_libraries(hklmreg PRIVATE hklm_common)
   target_compile_definitions(hklmreg PRIVATE UNICODE _UNICODE NOMINMAX)
+
+  install(TARGETS
+    hklm_wrapper
+    hklm_shim
+    hklmreg
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION bin
+  )
 endif()

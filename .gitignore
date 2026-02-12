@@ -56,6 +56,7 @@ dkms.conf
 
 # CMake / build
 build/
+stage/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
