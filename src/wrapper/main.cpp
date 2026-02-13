@@ -91,6 +91,26 @@ static int ParseLaunchArguments(std::wstring& targetExe,
 }
 
 static bool EnsureStdoutBoundToConsole() {
+  auto hasValidStdHandle = [](DWORD stdId) {
+    HANDLE handle = GetStdHandle(stdId);
+    if (!handle || handle == INVALID_HANDLE_VALUE) {
+      return false;
+    }
+
+    SetLastError(ERROR_SUCCESS);
+    const DWORD type = GetFileType(handle);
+    if (type == FILE_TYPE_UNKNOWN && GetLastError() != ERROR_SUCCESS) {
+      return false;
+    }
+    return true;
+  };
+
+  if (hasValidStdHandle(STD_OUTPUT_HANDLE) && hasValidStdHandle(STD_ERROR_HANDLE)) {
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+    return true;
+  }
+
   if (!AttachConsole(ATTACH_PARENT_PROCESS) && GetLastError() != ERROR_ACCESS_DENIED) {
     if (!AllocConsole()) {
       return false;
