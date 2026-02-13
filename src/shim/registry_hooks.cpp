@@ -46,6 +46,17 @@ bool ShouldInstallExtendedHooks() {
   return mode == L"all" || mode == L"full" || mode == L"extended";
 }
 
+bool ShouldDisableHooks() {
+  wchar_t modeBuf[64]{};
+  DWORD modeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
+  if (!modeLen || modeLen >= (sizeof(modeBuf) / sizeof(modeBuf[0]))) {
+    return false;
+  }
+  std::wstring mode(modeBuf, modeBuf + modeLen);
+  std::transform(mode.begin(), mode.end(), mode.begin(), [](wchar_t ch) { return (wchar_t)std::towlower(ch); });
+  return mode == L"off" || mode == L"none" || mode == L"disabled";
+}
+
 struct BypassGuard {
   BypassGuard() { g_bypass = true; }
   ~BypassGuard() { g_bypass = false; }
@@ -373,6 +384,10 @@ static bool CreateHookApiTyped(LPCWSTR moduleName, LPCSTR procName, TDetour deto
 }
 
 bool InstallRegistryHooks() {
+  if (ShouldDisableHooks()) {
+    return true;
+  }
+
   if (MH_Initialize() != MH_OK) {
     return false;
   }
