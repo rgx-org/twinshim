@@ -17,6 +17,48 @@
 
 using namespace hklmwrap;
 
+static void ShowError(const std::wstring& message) {
+#if defined(HKLM_WRAPPER_CONSOLE_APP)
+  fwprintf(stderr, L"%ls\n", message.c_str());
+  fflush(stderr);
+#else
+  MessageBoxW(nullptr, message.c_str(), L"hklm_wrapper", MB_ICONERROR);
+#endif
+}
+
+static void ShowInfo(const std::wstring& message) {
+#if defined(HKLM_WRAPPER_CONSOLE_APP)
+  fwprintf(stdout, L"%ls\n", message.c_str());
+  fflush(stdout);
+#else
+  MessageBoxW(nullptr, message.c_str(), L"hklm_wrapper", MB_ICONINFORMATION);
+#endif
+}
+
+static bool TryQueryWow64(HANDLE process, BOOL* isWow64) {
+  if (!isWow64) {
+    return false;
+  }
+  auto isWow64ProcessFn = reinterpret_cast<BOOL(WINAPI*)(HANDLE, PBOOL)>(
+      GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process"));
+  if (!isWow64ProcessFn) {
+    return false;
+  }
+  return isWow64ProcessFn(process, isWow64) != FALSE;
+}
+
+static bool IsProcessBitnessMismatched(HANDLE targetProcess) {
+  BOOL selfWow64 = FALSE;
+  BOOL targetWow64 = FALSE;
+  if (!TryQueryWow64(GetCurrentProcess(), &selfWow64)) {
+    return false;
+  }
+  if (!TryQueryWow64(targetProcess, &targetWow64)) {
+    return false;
+  }
+  return selfWow64 != targetWow64;
+}
+
 static std::vector<std::wstring> GetRawArgs() {
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -54,12 +96,12 @@ static int ParseLaunchArguments(std::wstring& targetExe,
                                 std::wstring& debugApisCsv) {
   const std::vector<std::wstring> rawArgs = GetRawArgs();
   if (rawArgs.empty()) {
-    MessageBoxW(nullptr, BuildUsageMessage().c_str(), L"hklm_wrapper", MB_ICONERROR);
+    ShowError(BuildUsageMessage());
     return 1;
   }
 
   if (rawArgs[0] == L"-h" || rawArgs[0] == L"--help" || rawArgs[0] == L"/?") {
-    MessageBoxW(nullptr, BuildUsageMessage().c_str(), L"hklm_wrapper", MB_ICONINFORMATION);
+    ShowInfo(BuildUsageMessage());
     return 0;
   }
 
@@ -67,10 +109,7 @@ static int ParseLaunchArguments(std::wstring& targetExe,
   while (i < rawArgs.size()) {
     if (rawArgs[i] == L"--debug") {
       if (i + 1 >= rawArgs.size()) {
-        MessageBoxW(nullptr,
-                    L"Missing value for --debug. Expected comma-separated API list or all.",
-                    L"hklm_wrapper",
-                    MB_ICONERROR);
+        ShowError(L"Missing value for --debug. Expected comma-separated API list or all.");
         return 1;
       }
       debugApisCsv = rawArgs[i + 1];
@@ -81,7 +120,7 @@ static int ParseLaunchArguments(std::wstring& targetExe,
   }
 
   if (i >= rawArgs.size()) {
-    MessageBoxW(nullptr, BuildUsageMessage().c_str(), L"hklm_wrapper", MB_ICONERROR);
+    ShowError(BuildUsageMessage());
     return 1;
   }
 
@@ -327,12 +366,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   DebugPipeBridge debugBridge;
   if (!debugApisCsv.empty()) {
     if (!EnsureStdoutBoundToConsole()) {
-      MessageBoxW(nullptr, L"Failed to bind stdout to console for --debug mode.", L"hklm_wrapper", MB_ICONERROR);
+      ShowError(L"Failed to bind stdout to console for --debug mode.");
       return 4;
     }
     if (!debugBridge.Start()) {
       std::wstring msg = L"Failed to create debug pipe: " + FormatWin32Error(GetLastError());
-      MessageBoxW(nullptr, msg.c_str(), L"hklm_wrapper", MB_ICONERROR);
+      ShowError(msg);
       return 5;
     }
     SetEnvironmentVariableW(L"HKLM_WRAPPER_DEBUG_APIS", debugApisCsv.c_str());
@@ -352,7 +391,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   CompatLayerGuard compatLayerGuard;
   if (!compatLayerGuard.EnableRunAsInvoker()) {
     std::wstring msg = L"Failed to set __COMPAT_LAYER=RunAsInvoker: " + FormatWin32Error(GetLastError());
-    MessageBoxW(nullptr, msg.c_str(), L"hklm_wrapper", MB_ICONERROR);
+    ShowError(msg);
     return 3;
   }
 #endif
@@ -373,15 +412,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   if (!ok) {
     auto err = GetLastError();
     std::wstring msg = L"CreateProcessW failed: " + FormatWin32Error(err);
-    MessageBoxW(nullptr, msg.c_str(), L"hklm_wrapper", MB_ICONERROR);
+    ShowError(msg);
     return (int)err;
+  }
+
+  if (IsProcessBitnessMismatched(pi.hProcess)) {
+    TerminateProcess(pi.hProcess, 1);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    ShowError(L"Wrapper/target architecture mismatch detected. Ensure hklm_wrapper_cli.exe, hklm_shim.dll, and target EXE have the same bitness (all x86 or all x64).");
+    return 6;
   }
 
   if (!InjectDllIntoProcess(pi.hProcess, shimPath)) {
     TerminateProcess(pi.hProcess, 1);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    MessageBoxW(nullptr, L"Failed to inject hklm_shim.dll into target process", L"hklm_wrapper", MB_ICONERROR);
+    ShowError(L"Failed to inject hklm_shim.dll into target process");
     return 2;
   }
 
