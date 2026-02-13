@@ -257,14 +257,19 @@ struct DebugPipeBridge {
   }
 
   void Stop() {
-    if (pipe != INVALID_HANDLE_VALUE) {
-      FlushFileBuffers(pipe);
-      DisconnectNamedPipe(pipe);
-      CloseHandle(pipe);
-      pipe = INVALID_HANDLE_VALUE;
+    if (pipe != INVALID_HANDLE_VALUE && !pipeName.empty()) {
+      HANDLE unblockClient = CreateFileW(pipeName.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+      if (unblockClient != INVALID_HANDLE_VALUE) {
+        CloseHandle(unblockClient);
+      }
     }
     if (reader.joinable()) {
       reader.join();
+    }
+    if (pipe != INVALID_HANDLE_VALUE) {
+      DisconnectNamedPipe(pipe);
+      CloseHandle(pipe);
+      pipe = INVALID_HANDLE_VALUE;
     }
   }
 
@@ -477,6 +482,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   CloseHandle(pi.hThread);
 
   if (trackWithDebugJob) {
+    TraceLine(L"waiting for job-tracked process tree to exit", traceEnabled);
     if (debugJob) {
       waitedForJob = WaitForJobToDrain(debugJob);
     }
@@ -487,11 +493,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   }
 
   if (!waitedForJob) {
+    TraceLine(L"waiting for target process handle to signal", traceEnabled);
     WaitForSingleObject(pi.hProcess, INFINITE);
   }
+  TraceLine(L"wait complete; stopping debug pipe bridge", traceEnabled);
   debugBridge.Stop();
   DWORD exitCode = 0;
   GetExitCodeProcess(pi.hProcess, &exitCode);
+  TraceLine(L"wrapper returning exit code " + std::to_wstring((unsigned long)exitCode), traceEnabled);
   CloseHandle(pi.hProcess);
   return (int)exitCode;
 }
