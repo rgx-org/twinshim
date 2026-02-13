@@ -7,6 +7,33 @@
   },
   "configurePresets": [
     {
+      "name": "windows-x86-msvc-release",
+      "displayName": "Windows x86 (MSVC) Release",
+      "description": "Native Win32 build with MSVC + vcpkg.",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/windows-x86-msvc-release",
+      "architecture": {
+        "value": "Win32",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/vcpkg-env-or-home.cmake",
+        "VCPKG_TARGET_TRIPLET": "x86-windows",
+        "VCPKG_APPLOCAL_DEPS": "OFF"
+      }
+    },
+    {
+      "name": "windows-x86-msvc-release-stage",
+      "displayName": "Windows x86 (MSVC) Release Staging",
+      "description": "Native Win32 build and install runtime binaries into stage/bin.",
+      "inherits": "windows-x86-msvc-release",
+      "binaryDir": "${sourceDir}/build/windows-x86-msvc-release-stage",
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/stage"
+      }
+    },
+    {
       "name": "windows-x86-mingw-release",
       "displayName": "Windows x86 (MinGW-w64) Release",
       "description": "Cross-compile Win32 (i686) from macOS/Linux via MinGW-w64 + vcpkg.",
@@ -81,6 +108,24 @@
     }
   ],
   "buildPresets": [
+    {
+      "name": "windows-x86-msvc-release",
+      "configurePreset": "windows-x86-msvc-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-x86-msvc-release-stage",
+      "configurePreset": "windows-x86-msvc-release-stage",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-x86-msvc-release-stage-install",
+      "configurePreset": "windows-x86-msvc-release-stage",
+      "configuration": "Release",
+      "targets": [
+        "INSTALL"
+      ]
+    },
     {
       "name": "windows-x86-mingw-release",
       "configurePreset": "windows-x86-mingw-release",

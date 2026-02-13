@@ -24,17 +24,31 @@ This project uses CMake + vcpkg for SQLite3.
 
 ### Native Windows build
 
-For a 32-bit Windows build (Win32):
+For a 32-bit native Windows build (Win32), use the preset flow:
 
 1) Install vcpkg and set `VCPKG_ROOT`.
 
 2) Configure + build:
 
-`cmake -S . -B build-win32 -A Win32 -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x86-windows`
+`cmake --preset windows-x86-msvc-release`
 
-`cmake --build build-win32 --config Release`
+`cmake --build --preset windows-x86-msvc-release`
 
-Outputs include `hklm_wrapper.exe`, `hklm_shim.dll`, and `hklmreg.exe`.
+Artifacts are emitted under `build/windows-x86-msvc-release/Release`.
+
+If you want a stable runtime output directory (`stage/bin`), use the 3-command staging flow:
+
+`cmake --preset windows-x86-msvc-release-stage`
+
+`cmake --build --preset windows-x86-msvc-release-stage`
+
+`cmake --build --preset windows-x86-msvc-release-stage-install`
+
+Expected output path:
+
+- `stage/bin/hklm_wrapper.exe`
+- `stage/bin/hklm_shim.dll`
+- `stage/bin/hklmreg.exe`
 
 ### Cross-compile from macOS/Linux to Win32 (x86)
 
@@ -89,6 +103,7 @@ Expected output path:
 
 Optional presets:
 
+- `windows-x86-msvc-release`
 - `windows-x86-mingw-debug`
 - `windows-x64-mingw-release`
 
