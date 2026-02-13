@@ -17,6 +17,23 @@ static int64_t NowUnixSeconds() {
 
 static std::vector<std::wstring> KeyPrefixes(const std::wstring& keyPath);
 
+static bool BindWideText(sqlite3_stmt* st, int index1, const std::wstring& text) {
+  std::string utf8 = WideToUtf8(text);
+  if (!text.empty() && utf8.empty()) {
+    return false;
+  }
+  return sqlite3_bind_text(st, index1, utf8.data(), (int)utf8.size(), SQLITE_TRANSIENT) == SQLITE_OK;
+}
+
+static std::wstring ColumnWideText(sqlite3_stmt* st, int col) {
+  const char* p = reinterpret_cast<const char*>(sqlite3_column_text(st, col));
+  int bytes = sqlite3_column_bytes(st, col);
+  if (!p || bytes <= 0) {
+    return {};
+  }
+  return Utf8ToWide(std::string(p, p + bytes));
+}
+
 LocalRegistryStore::LocalRegistryStore() = default;
 
 LocalRegistryStore::~LocalRegistryStore() {
@@ -97,7 +114,10 @@ bool LocalRegistryStore::PutKey(const std::wstring& keyPath) {
   for (const auto& p : prefixes) {
     sqlite3_reset(st);
     sqlite3_clear_bindings(st);
-    sqlite3_bind_text16(st, 1, p.c_str(), (int)(p.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+    if (!BindWideText(st, 1, p)) {
+      ok = false;
+      break;
+    }
     sqlite3_bind_int64(st, 2, now);
     int rc = sqlite3_step(st);
     if (rc != SQLITE_DONE) {
@@ -125,7 +145,11 @@ bool LocalRegistryStore::DeleteKeyTree(const std::wstring& keyPath) {
       Exec("ROLLBACK;");
       return false;
     }
-    sqlite3_bind_text16(st, 1, keyPath.c_str(), (int)(keyPath.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+    if (!BindWideText(st, 1, keyPath)) {
+      sqlite3_finalize(st);
+      Exec("ROLLBACK;");
+      return false;
+    }
     sqlite3_bind_int64(st, 2, NowUnixSeconds());
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
@@ -146,8 +170,11 @@ bool LocalRegistryStore::DeleteKeyTree(const std::wstring& keyPath) {
       return false;
     }
     sqlite3_bind_int64(st, 1, NowUnixSeconds());
-    sqlite3_bind_text16(st, 2, keyPath.c_str(), (int)(keyPath.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
-    sqlite3_bind_text16(st, 3, like.c_str(), (int)(like.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+    if (!BindWideText(st, 2, keyPath) || !BindWideText(st, 3, like)) {
+      sqlite3_finalize(st);
+      Exec("ROLLBACK;");
+      return false;
+    }
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc != SQLITE_DONE) {
@@ -188,7 +215,10 @@ bool LocalRegistryStore::IsKeyDeleted(const std::wstring& keyPath) {
     if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
       return false;
     }
-    sqlite3_bind_text16(st, 1, p.c_str(), (int)(p.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+    if (!BindWideText(st, 1, p)) {
+      sqlite3_finalize(st);
+      return false;
+    }
     int rc = sqlite3_step(st);
     if (rc == SQLITE_ROW) {
       int deleted = sqlite3_column_int(st, 0);
@@ -218,7 +248,10 @@ bool LocalRegistryStore::KeyExistsLocally(const std::wstring& keyPath) {
     if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
       return false;
     }
-    sqlite3_bind_text16(st, 1, keyPath.c_str(), (int)(keyPath.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+    if (!BindWideText(st, 1, keyPath)) {
+      sqlite3_finalize(st);
+      return false;
+    }
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     if (rc == SQLITE_ROW) {
@@ -232,7 +265,10 @@ bool LocalRegistryStore::KeyExistsLocally(const std::wstring& keyPath) {
     if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
       return false;
     }
-    sqlite3_bind_text16(st, 1, keyPath.c_str(), (int)(keyPath.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+    if (!BindWideText(st, 1, keyPath)) {
+      sqlite3_finalize(st);
+      return false;
+    }
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_ROW;
@@ -257,8 +293,10 @@ bool LocalRegistryStore::PutValue(const std::wstring& keyPath,
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     return false;
   }
-  sqlite3_bind_text16(st, 1, keyPath.c_str(), (int)(keyPath.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
-  sqlite3_bind_text16(st, 2, valueName.c_str(), (int)(valueName.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+  if (!BindWideText(st, 1, keyPath) || !BindWideText(st, 2, valueName)) {
+    sqlite3_finalize(st);
+    return false;
+  }
   sqlite3_bind_int(st, 3, (int)type);
   if (data && dataSize) {
     sqlite3_bind_blob(st, 4, data, (int)dataSize, SQLITE_TRANSIENT);
@@ -284,8 +322,10 @@ bool LocalRegistryStore::DeleteValue(const std::wstring& keyPath, const std::wst
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     return false;
   }
-  sqlite3_bind_text16(st, 1, keyPath.c_str(), (int)(keyPath.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
-  sqlite3_bind_text16(st, 2, valueName.c_str(), (int)(valueName.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+  if (!BindWideText(st, 1, keyPath) || !BindWideText(st, 2, valueName)) {
+    sqlite3_finalize(st);
+    return false;
+  }
   sqlite3_bind_int64(st, 3, NowUnixSeconds());
   int rc = sqlite3_step(st);
   sqlite3_finalize(st);
@@ -306,8 +346,10 @@ std::optional<StoredValue> LocalRegistryStore::GetValue(const std::wstring& keyP
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     return std::nullopt;
   }
-  sqlite3_bind_text16(st, 1, keyPath.c_str(), (int)(keyPath.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
-  sqlite3_bind_text16(st, 2, valueName.c_str(), (int)(valueName.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+  if (!BindWideText(st, 1, keyPath) || !BindWideText(st, 2, valueName)) {
+    sqlite3_finalize(st);
+    return std::nullopt;
+  }
   int rc = sqlite3_step(st);
   if (rc != SQLITE_ROW) {
     sqlite3_finalize(st);
@@ -341,19 +383,18 @@ std::vector<LocalRegistryStore::ValueRow> LocalRegistryStore::ListValues(const s
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     return rows;
   }
-  sqlite3_bind_text16(st, 1, keyPath.c_str(), (int)(keyPath.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+  if (!BindWideText(st, 1, keyPath)) {
+    sqlite3_finalize(st);
+    return rows;
+  }
   while (sqlite3_step(st) == SQLITE_ROW) {
-    const void* n16 = sqlite3_column_text16(st, 0);
-    int nBytes = sqlite3_column_bytes16(st, 0);
     uint32_t type = (uint32_t)sqlite3_column_int(st, 1);
     const void* blob = sqlite3_column_blob(st, 2);
     int blobSize = sqlite3_column_bytes(st, 2);
     int deleted = sqlite3_column_int(st, 3);
 
     ValueRow r;
-    if (n16 && nBytes > 0) {
-      r.valueName.assign((const wchar_t*)n16, (size_t)nBytes / sizeof(wchar_t));
-    }
+    r.valueName = ColumnWideText(st, 0);
     r.type = type;
     r.isDeleted = deleted != 0;
     if (blob && blobSize > 0) {
@@ -383,7 +424,10 @@ std::vector<std::wstring> LocalRegistryStore::ListImmediateSubKeys(const std::ws
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     return subkeys;
   }
-  sqlite3_bind_text16(st, 1, like.c_str(), (int)(like.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+  if (!BindWideText(st, 1, like)) {
+    sqlite3_finalize(st);
+    return subkeys;
+  }
 
   std::set<std::wstring> uniq;
   const std::wstring prefix = keyPath + L"\\";
@@ -392,12 +436,10 @@ std::vector<std::wstring> LocalRegistryStore::ListImmediateSubKeys(const std::ws
     if (deleted != 0) {
       continue;
     }
-    const void* k16 = sqlite3_column_text16(st, 0);
-    int kBytes = sqlite3_column_bytes16(st, 0);
-    if (!k16 || kBytes <= 0) {
+    std::wstring full = ColumnWideText(st, 0);
+    if (full.empty()) {
       continue;
     }
-    std::wstring full((const wchar_t*)k16, (size_t)kBytes / sizeof(wchar_t));
     if (full.size() <= prefix.size()) {
       continue;
     }
@@ -428,21 +470,13 @@ std::vector<LocalRegistryStore::ExportRow> LocalRegistryStore::ExportAll() {
     return rows;
   }
   while (sqlite3_step(st) == SQLITE_ROW) {
-    const void* k16 = sqlite3_column_text16(st, 0);
-    const void* n16 = sqlite3_column_text16(st, 1);
-    int kBytes = sqlite3_column_bytes16(st, 0);
-    int nBytes = sqlite3_column_bytes16(st, 1);
     uint32_t type = (uint32_t)sqlite3_column_int(st, 2);
     const void* blob = sqlite3_column_blob(st, 3);
     int blobSize = sqlite3_column_bytes(st, 3);
 
     ExportRow r;
-    if (k16 && kBytes > 0) {
-      r.keyPath.assign((const wchar_t*)k16, (size_t)kBytes / sizeof(wchar_t));
-    }
-    if (n16 && nBytes > 0) {
-      r.valueName.assign((const wchar_t*)n16, (size_t)nBytes / sizeof(wchar_t));
-    }
+    r.keyPath = ColumnWideText(st, 0);
+    r.valueName = ColumnWideText(st, 1);
     r.type = type;
     if (blob && blobSize > 0) {
       r.data.resize((size_t)blobSize);

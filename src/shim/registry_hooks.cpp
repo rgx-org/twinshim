@@ -280,10 +280,11 @@ std::wstring FormatValuePreview(DWORD type, const BYTE* data, DWORD cbData) {
   if (type == REG_SZ || type == REG_EXPAND_SZ) {
     const wchar_t* w = reinterpret_cast<const wchar_t*>(data);
     size_t chars = cbData / sizeof(wchar_t);
-    std::wstring text(w, w + chars);
-    while (!text.empty() && text.back() == L'\0') {
-      text.pop_back();
+    size_t end = 0;
+    while (end < chars && w[end] != L'\0') {
+      end++;
     }
+    std::wstring text(w, w + end);
     return L"str:\"" + SanitizeForLog(text) + L"\"";
   }
 
@@ -375,6 +376,67 @@ void TraceApiEvent(const wchar_t* apiName,
 
 void TraceApiCall(const wchar_t* apiName) {
   TraceApiEvent(apiName, L"call", L"-", L"-", L"-");
+}
+
+LONG TraceReadResultAndReturn(const wchar_t* apiName,
+                              const std::wstring& keyPath,
+                              const std::wstring& valueName,
+                              LONG status,
+                              bool typeKnown,
+                              DWORD type,
+                              const BYTE* data,
+                              DWORD cbData,
+                              bool sizeOnly) {
+  std::wstring value = L"rc=" + std::to_wstring((unsigned long)status);
+  if (typeKnown) {
+    value += L" type=" + FormatRegType(type);
+  }
+  value += L" cb=" + std::to_wstring((unsigned long)cbData);
+
+  if (status == ERROR_SUCCESS) {
+    if (data && cbData) {
+      value += L" " + FormatValuePreview(typeKnown ? type : REG_BINARY, data, cbData);
+    } else if (sizeOnly) {
+      value += L" <size_only>";
+    }
+  } else if (status == ERROR_MORE_DATA) {
+    value += L" <more_data>";
+  }
+
+  TraceApiEvent(apiName, L"query_value", keyPath, valueName, value);
+  return status;
+}
+
+LONG TraceEnumReadResultAndReturn(const wchar_t* apiName,
+                                  const std::wstring& keyPath,
+                                  DWORD index,
+                                  const std::wstring& valueName,
+                                  LONG status,
+                                  bool typeKnown,
+                                  DWORD type,
+                                  const BYTE* data,
+                                  DWORD cbData,
+                                  bool sizeOnly) {
+  std::wstring detail = L"idx=" + std::to_wstring((unsigned long)index) +
+                        L" rc=" + std::to_wstring((unsigned long)status);
+  if (typeKnown) {
+    detail += L" type=" + FormatRegType(type);
+  }
+  detail += L" cb=" + std::to_wstring((unsigned long)cbData);
+
+  if (status == ERROR_SUCCESS) {
+    if (data && cbData) {
+      detail += L" " + FormatValuePreview(typeKnown ? type : REG_BINARY, data, cbData);
+    } else if (sizeOnly) {
+      detail += L" <size_only>";
+    }
+  } else if (status == ERROR_MORE_DATA) {
+    detail += L" <more_data>";
+  }
+
+  std::wstring nameField = valueName.empty() ? (L"index:" + std::to_wstring((unsigned long)index)) : valueName;
+  TraceApiEvent(apiName, L"enum_value", keyPath, nameField, detail);
+  return status;
 }
 
 void EnsureStoreOpen() {
@@ -936,9 +998,14 @@ LONG WINAPI Hook_RegQueryValueExW(HKEY hKey,
 
   std::wstring keyPath = KeyPathFromHandle(hKey);
   std::wstring valueName = lpValueName ? std::wstring(lpValueName) : std::wstring();
-  TraceApiEvent(L"RegQueryValueExW", L"query_value", keyPath, valueName, L"<read>");
   if (keyPath.empty()) {
-    return fpRegQueryValueExW(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
+    DWORD typeLocal = 0;
+    LPDWORD typeOut = lpType ? lpType : &typeLocal;
+    LONG rc = fpRegQueryValueExW(hKey, lpValueName, lpReserved, typeOut, lpData, lpcbData);
+    DWORD cb = lpcbData ? *lpcbData : 0;
+    const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueExW", keyPath, valueName, rc, true, *typeOut, outData, cb, lpData == nullptr);
   }
 
   EnsureStoreOpen();
@@ -947,28 +1014,33 @@ LONG WINAPI Hook_RegQueryValueExW(HKEY hKey,
     auto v = g_store.GetValue(keyPath, valueName);
     if (v.has_value()) {
       if (v->isDeleted) {
-        return ERROR_FILE_NOT_FOUND;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueExW", keyPath, valueName, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
       }
       if (lpType) {
         *lpType = (DWORD)v->type;
       }
       DWORD needed = (DWORD)v->data.size();
       if (!lpcbData) {
-        return ERROR_INVALID_PARAMETER;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueExW", keyPath, valueName, ERROR_INVALID_PARAMETER, true, (DWORD)v->type, nullptr, 0, false);
       }
       if (!lpData) {
         *lpcbData = needed;
-        return ERROR_SUCCESS;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueExW", keyPath, valueName, ERROR_SUCCESS, true, (DWORD)v->type, nullptr, needed, true);
       }
       if (*lpcbData < needed) {
         *lpcbData = needed;
-        return ERROR_MORE_DATA;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueExW", keyPath, valueName, ERROR_MORE_DATA, true, (DWORD)v->type, nullptr, needed, false);
       }
       if (needed) {
         std::memcpy(lpData, v->data.data(), needed);
       }
       *lpcbData = needed;
-      return ERROR_SUCCESS;
+      return TraceReadResultAndReturn(
+          L"RegQueryValueExW", keyPath, valueName, ERROR_SUCCESS, true, (DWORD)v->type, lpData, needed, false);
     }
   }
 
@@ -993,10 +1065,17 @@ LONG WINAPI Hook_RegQueryValueExW(HKEY hKey,
     real = vk->real ? vk->real : nullptr;
   }
   if (!real) {
-    return ERROR_FILE_NOT_FOUND;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueExW", keyPath, valueName, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
   }
   BypassGuard guard;
-  return fpRegQueryValueExW(real, lpValueName, lpReserved, lpType, lpData, lpcbData);
+  DWORD typeLocal = 0;
+  LPDWORD typeOut = lpType ? lpType : &typeLocal;
+  LONG rc = fpRegQueryValueExW(real, lpValueName, lpReserved, typeOut, lpData, lpcbData);
+  DWORD cb = lpcbData ? *lpcbData : 0;
+  const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
+  return TraceReadResultAndReturn(
+      L"RegQueryValueExW", keyPath, valueName, rc, true, *typeOut, outData, cb, lpData == nullptr);
 }
 
 LONG WINAPI Hook_RegDeleteValueW(HKEY hKey, LPCWSTR lpValueName) {
@@ -1180,7 +1259,17 @@ LONG WINAPI Hook_RegEnumValueW(HKEY hKey,
   std::wstring keyPath = KeyPathFromHandle(hKey);
   TraceApiEvent(L"RegEnumValueW", L"enum_value", keyPath, L"index", std::to_wstring(dwIndex));
   if (keyPath.empty()) {
-    return fpRegEnumValueW(hKey, dwIndex, lpValueName, lpcchValueName, lpReserved, lpType, lpData, lpcbData);
+    DWORD typeLocal = 0;
+    LPDWORD typeOut = lpType ? lpType : &typeLocal;
+    LONG rc = fpRegEnumValueW(hKey, dwIndex, lpValueName, lpcchValueName, lpReserved, typeOut, lpData, lpcbData);
+    std::wstring outName;
+    if (rc == ERROR_SUCCESS && lpValueName && lpcchValueName) {
+      outName.assign(lpValueName, lpValueName + *lpcchValueName);
+    }
+    DWORD cb = lpcbData ? *lpcbData : 0;
+    const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueW", keyPath, dwIndex, outName, rc, true, *typeOut, outData, cb, lpData == nullptr);
   }
   if (lpReserved) {
     *lpReserved = 0;
@@ -1189,11 +1278,13 @@ LONG WINAPI Hook_RegEnumValueW(HKEY hKey,
   HKEY real = RealHandleForFallback(hKey);
   auto merged = GetMergedValueNames(keyPath, real);
   if (dwIndex >= merged.names.size()) {
-    return ERROR_NO_MORE_ITEMS;
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueW", keyPath, dwIndex, L"", ERROR_NO_MORE_ITEMS, false, REG_NONE, nullptr, 0, false);
   }
   const std::wstring& name = merged.names[dwIndex];
   if (!lpcchValueName) {
-    return ERROR_INVALID_PARAMETER;
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueW", keyPath, dwIndex, name, ERROR_INVALID_PARAMETER, false, REG_NONE, nullptr, 0, false);
   }
   DWORD neededName = (DWORD)name.size();
   if (!lpValueName) {
@@ -1201,7 +1292,8 @@ LONG WINAPI Hook_RegEnumValueW(HKEY hKey,
   } else {
     if (*lpcchValueName <= neededName) {
       *lpcchValueName = neededName + 1;
-      return ERROR_MORE_DATA;
+      return TraceEnumReadResultAndReturn(
+          L"RegEnumValueW", keyPath, dwIndex, name, ERROR_MORE_DATA, false, REG_NONE, nullptr, 0, false);
     }
     std::memcpy(lpValueName, name.c_str(), (neededName + 1) * sizeof(wchar_t));
     *lpcchValueName = neededName;
@@ -1217,31 +1309,42 @@ LONG WINAPI Hook_RegEnumValueW(HKEY hKey,
         *lpType = (DWORD)v->type;
       }
       if (!lpcbData) {
-        return ERROR_INVALID_PARAMETER;
+        return TraceEnumReadResultAndReturn(
+            L"RegEnumValueW", keyPath, dwIndex, name, ERROR_INVALID_PARAMETER, true, (DWORD)v->type, nullptr, 0, false);
       }
       DWORD needed = (DWORD)v->data.size();
       if (!lpData) {
         *lpcbData = needed;
-        return ERROR_SUCCESS;
+        return TraceEnumReadResultAndReturn(
+            L"RegEnumValueW", keyPath, dwIndex, name, ERROR_SUCCESS, true, (DWORD)v->type, nullptr, needed, true);
       }
       if (*lpcbData < needed) {
         *lpcbData = needed;
-        return ERROR_MORE_DATA;
+        return TraceEnumReadResultAndReturn(
+            L"RegEnumValueW", keyPath, dwIndex, name, ERROR_MORE_DATA, true, (DWORD)v->type, nullptr, needed, false);
       }
       if (needed) {
         std::memcpy(lpData, v->data.data(), needed);
       }
       *lpcbData = needed;
-      return ERROR_SUCCESS;
+      return TraceEnumReadResultAndReturn(
+          L"RegEnumValueW", keyPath, dwIndex, name, ERROR_SUCCESS, true, (DWORD)v->type, lpData, needed, false);
     }
   }
 
   // Otherwise return real data for this named value.
   if (!real) {
-    return ERROR_FILE_NOT_FOUND;
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueW", keyPath, dwIndex, name, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
   }
   BypassGuard guard;
-  return fpRegQueryValueExW(real, name.c_str(), nullptr, lpType, lpData, lpcbData);
+  DWORD typeLocal = 0;
+  LPDWORD typeOut = lpType ? lpType : &typeLocal;
+  LONG rc = fpRegQueryValueExW(real, name.c_str(), nullptr, typeOut, lpData, lpcbData);
+  DWORD cb = lpcbData ? *lpcbData : 0;
+  const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
+  return TraceEnumReadResultAndReturn(
+      L"RegEnumValueW", keyPath, dwIndex, name, rc, true, *typeOut, outData, cb, lpData == nullptr);
 }
 
 LONG WINAPI Hook_RegEnumValueA(HKEY hKey,
@@ -1258,7 +1361,17 @@ LONG WINAPI Hook_RegEnumValueA(HKEY hKey,
   std::wstring keyPath = KeyPathFromHandle(hKey);
   TraceApiEvent(L"RegEnumValueA", L"enum_value", keyPath, L"index", std::to_wstring(dwIndex));
   if (keyPath.empty()) {
-    return fpRegEnumValueA(hKey, dwIndex, lpValueName, lpcchValueName, lpReserved, lpType, lpData, lpcbData);
+    DWORD typeLocal = 0;
+    LPDWORD typeOut = lpType ? lpType : &typeLocal;
+    LONG rc = fpRegEnumValueA(hKey, dwIndex, lpValueName, lpcchValueName, lpReserved, typeOut, lpData, lpcbData);
+    std::wstring outName;
+    if (rc == ERROR_SUCCESS && lpValueName && lpcchValueName) {
+      outName = AnsiToWide(lpValueName, (int)(*lpcchValueName));
+    }
+    DWORD cb = lpcbData ? *lpcbData : 0;
+    const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueA", keyPath, dwIndex, outName, rc, true, *typeOut, outData, cb, lpData == nullptr);
   }
   if (lpReserved) {
     *lpReserved = 0;
@@ -1267,7 +1380,8 @@ LONG WINAPI Hook_RegEnumValueA(HKEY hKey,
   HKEY real = RealHandleForFallback(hKey);
   auto merged = GetMergedValueNames(keyPath, real);
   if (dwIndex >= merged.names.size()) {
-    return ERROR_NO_MORE_ITEMS;
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueA", keyPath, dwIndex, L"", ERROR_NO_MORE_ITEMS, false, REG_NONE, nullptr, 0, false);
   }
   const std::wstring& nameW = merged.names[dwIndex];
   std::vector<uint8_t> nameBytes = WideToAnsiBytesForQuery(REG_SZ, std::vector<uint8_t>((const uint8_t*)nameW.c_str(),
@@ -1275,7 +1389,8 @@ LONG WINAPI Hook_RegEnumValueA(HKEY hKey,
                                                                                            (nameW.size() + 1) * sizeof(wchar_t)));
   // nameBytes is ANSI+NUL
   if (!lpcchValueName) {
-    return ERROR_INVALID_PARAMETER;
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueA", keyPath, dwIndex, nameW, ERROR_INVALID_PARAMETER, false, REG_NONE, nullptr, 0, false);
   }
   DWORD neededName = (DWORD)strlen(reinterpret_cast<const char*>(nameBytes.data()));
   if (!lpValueName) {
@@ -1283,7 +1398,8 @@ LONG WINAPI Hook_RegEnumValueA(HKEY hKey,
   } else {
     if (*lpcchValueName <= neededName) {
       *lpcchValueName = neededName + 1;
-      return ERROR_MORE_DATA;
+      return TraceEnumReadResultAndReturn(
+          L"RegEnumValueA", keyPath, dwIndex, nameW, ERROR_MORE_DATA, false, REG_NONE, nullptr, 0, false);
     }
     std::memcpy(lpValueName, nameBytes.data(), neededName + 1);
     *lpcchValueName = neededName;
@@ -1299,31 +1415,42 @@ LONG WINAPI Hook_RegEnumValueA(HKEY hKey,
         *lpType = type;
       }
       if (!lpcbData) {
-        return ERROR_INVALID_PARAMETER;
+        return TraceEnumReadResultAndReturn(
+            L"RegEnumValueA", keyPath, dwIndex, nameW, ERROR_INVALID_PARAMETER, true, type, nullptr, 0, false);
       }
       auto outBytes = WideToAnsiBytesForQuery(type, v->data);
       DWORD needed = (DWORD)outBytes.size();
       if (!lpData) {
         *lpcbData = needed;
-        return ERROR_SUCCESS;
+        return TraceEnumReadResultAndReturn(
+            L"RegEnumValueA", keyPath, dwIndex, nameW, ERROR_SUCCESS, true, type, nullptr, needed, true);
       }
       if (*lpcbData < needed) {
         *lpcbData = needed;
-        return ERROR_MORE_DATA;
+        return TraceEnumReadResultAndReturn(
+            L"RegEnumValueA", keyPath, dwIndex, nameW, ERROR_MORE_DATA, true, type, nullptr, needed, false);
       }
       if (needed) {
         std::memcpy(lpData, outBytes.data(), needed);
       }
       *lpcbData = needed;
-      return ERROR_SUCCESS;
+      return TraceEnumReadResultAndReturn(
+          L"RegEnumValueA", keyPath, dwIndex, nameW, ERROR_SUCCESS, true, type, lpData, needed, false);
     }
   }
 
   if (!real) {
-    return ERROR_FILE_NOT_FOUND;
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueA", keyPath, dwIndex, nameW, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
   }
   BypassGuard guard;
-  return fpRegQueryValueExA(real, reinterpret_cast<const char*>(nameBytes.data()), nullptr, lpType, lpData, lpcbData);
+  DWORD typeLocal = 0;
+  LPDWORD typeOut = lpType ? lpType : &typeLocal;
+  LONG rc = fpRegQueryValueExA(real, reinterpret_cast<const char*>(nameBytes.data()), nullptr, typeOut, lpData, lpcbData);
+  DWORD cb = lpcbData ? *lpcbData : 0;
+  const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
+  return TraceEnumReadResultAndReturn(
+      L"RegEnumValueA", keyPath, dwIndex, nameW, rc, true, *typeOut, outData, cb, lpData == nullptr);
 }
 
 LONG WINAPI Hook_RegEnumKeyExW(HKEY hKey,
@@ -1666,12 +1793,16 @@ LONG WINAPI Hook_RegQueryValueW(HKEY hKey, LPCWSTR lpSubKey, LPWSTR lpData, PLON
   std::wstring base = KeyPathFromHandle(hKey);
   std::wstring sub = lpSubKey ? CanonicalizeSubKey(lpSubKey) : L"";
   std::wstring full = base.empty() ? (sub.empty() ? L"(native)" : sub) : (sub.empty() ? base : JoinKeyPath(base, sub));
-  TraceApiEvent(L"RegQueryValueW", L"query_value", full, L"(Default)", L"<read>");
   if (base.empty()) {
-    return fpRegQueryValueW(hKey, lpSubKey, lpData, lpcbData);
+    LONG rc = fpRegQueryValueW(hKey, lpSubKey, lpData, lpcbData);
+    DWORD cb = lpcbData ? (DWORD)*lpcbData : 0;
+    const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? reinterpret_cast<const BYTE*>(lpData) : nullptr;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueW", full, L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
   }
   if (!lpcbData) {
-    return ERROR_INVALID_PARAMETER;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueW", full, L"(Default)", ERROR_INVALID_PARAMETER, true, REG_SZ, nullptr, 0, false);
   }
   full = sub.empty() ? base : JoinKeyPath(base, sub);
   std::wstring valueName;
@@ -1682,22 +1813,33 @@ LONG WINAPI Hook_RegQueryValueW(HKEY hKey, LPCWSTR lpSubKey, LPWSTR lpData, PLON
     auto v = g_store.GetValue(full, valueName);
     if (v.has_value()) {
       if (v->isDeleted) {
-        return ERROR_FILE_NOT_FOUND;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueW", full, L"(Default)", ERROR_FILE_NOT_FOUND, true, REG_SZ, nullptr, 0, false);
       }
       // Treat as string.
       LONG needed = (LONG)v->data.size();
       if (!lpData) {
         *lpcbData = needed;
-        return ERROR_SUCCESS;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueW", full, L"(Default)", ERROR_SUCCESS, true, REG_SZ, nullptr, (DWORD)needed, true);
       }
       if (*lpcbData < needed) {
         *lpcbData = needed;
-        return ERROR_MORE_DATA;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueW", full, L"(Default)", ERROR_MORE_DATA, true, REG_SZ, nullptr, (DWORD)needed, false);
       }
       if (needed) {
         std::memcpy(lpData, v->data.data(), (size_t)needed);
       }
-      return ERROR_SUCCESS;
+      return TraceReadResultAndReturn(L"RegQueryValueW",
+                                      full,
+                                      L"(Default)",
+                                      ERROR_SUCCESS,
+                                      true,
+                                      REG_SZ,
+                                      reinterpret_cast<const BYTE*>(lpData),
+                                      (DWORD)needed,
+                                      false);
     }
   }
 
@@ -1711,13 +1853,22 @@ LONG WINAPI Hook_RegQueryValueW(HKEY hKey, LPCWSTR lpSubKey, LPWSTR lpData, PLON
         realParent = opened;
         LONG rc = fpRegQueryValueW(realParent, nullptr, lpData, lpcbData);
         fpRegCloseKey(realParent);
-        return rc;
+        DWORD cb = lpcbData ? (DWORD)*lpcbData : 0;
+        const BYTE* outData =
+            (rc == ERROR_SUCCESS && lpData && lpcbData) ? reinterpret_cast<const BYTE*>(lpData) : nullptr;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueW", full, L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
       }
     }
-    return ERROR_FILE_NOT_FOUND;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueW", full, L"(Default)", ERROR_FILE_NOT_FOUND, true, REG_SZ, nullptr, 0, false);
   }
   BypassGuard guard;
-  return fpRegQueryValueW(realParent, lpSubKey, lpData, lpcbData);
+  LONG rc = fpRegQueryValueW(realParent, lpSubKey, lpData, lpcbData);
+  DWORD cb = lpcbData ? (DWORD)*lpcbData : 0;
+  const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? reinterpret_cast<const BYTE*>(lpData) : nullptr;
+  return TraceReadResultAndReturn(
+      L"RegQueryValueW", full, L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
 }
 
 LONG WINAPI Hook_RegQueryValueA(HKEY hKey, LPCSTR lpSubKey, LPSTR lpData, PLONG lpcbData) {
@@ -1727,12 +1878,16 @@ LONG WINAPI Hook_RegQueryValueA(HKEY hKey, LPCSTR lpSubKey, LPSTR lpData, PLONG 
   std::wstring base = KeyPathFromHandle(hKey);
   std::wstring subW = lpSubKey ? CanonicalizeSubKey(AnsiToWide(lpSubKey, -1)) : L"";
   std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
-  TraceApiEvent(L"RegQueryValueA", L"query_value", full, L"(Default)", L"<read>");
   if (base.empty()) {
-    return fpRegQueryValueA(hKey, lpSubKey, lpData, lpcbData);
+    LONG rc = fpRegQueryValueA(hKey, lpSubKey, lpData, lpcbData);
+    DWORD cb = lpcbData ? (DWORD)*lpcbData : 0;
+    const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? reinterpret_cast<const BYTE*>(lpData) : nullptr;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueA", full, L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
   }
   if (!lpcbData) {
-    return ERROR_INVALID_PARAMETER;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueA", full, L"(Default)", ERROR_INVALID_PARAMETER, true, REG_SZ, nullptr, 0, false);
   }
   full = subW.empty() ? base : JoinKeyPath(base, subW);
   std::wstring valueName;
@@ -1743,22 +1898,33 @@ LONG WINAPI Hook_RegQueryValueA(HKEY hKey, LPCSTR lpSubKey, LPSTR lpData, PLONG 
     auto v = g_store.GetValue(full, valueName);
     if (v.has_value()) {
       if (v->isDeleted) {
-        return ERROR_FILE_NOT_FOUND;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueA", full, L"(Default)", ERROR_FILE_NOT_FOUND, true, REG_SZ, nullptr, 0, false);
       }
       auto outBytes = WideToAnsiBytesForQuery(REG_SZ, v->data);
       LONG needed = (LONG)outBytes.size();
       if (!lpData) {
         *lpcbData = needed;
-        return ERROR_SUCCESS;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueA", full, L"(Default)", ERROR_SUCCESS, true, REG_SZ, nullptr, (DWORD)needed, true);
       }
       if (*lpcbData < needed) {
         *lpcbData = needed;
-        return ERROR_MORE_DATA;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueA", full, L"(Default)", ERROR_MORE_DATA, true, REG_SZ, nullptr, (DWORD)needed, false);
       }
       if (needed) {
         std::memcpy(lpData, outBytes.data(), (size_t)needed);
       }
-      return ERROR_SUCCESS;
+      return TraceReadResultAndReturn(L"RegQueryValueA",
+                                      full,
+                                      L"(Default)",
+                                      ERROR_SUCCESS,
+                                      true,
+                                      REG_SZ,
+                                      reinterpret_cast<const BYTE*>(lpData),
+                                      (DWORD)needed,
+                                      false);
     }
   }
 
@@ -1771,13 +1937,22 @@ LONG WINAPI Hook_RegQueryValueA(HKEY hKey, LPCSTR lpSubKey, LPSTR lpData, PLONG 
         realParent = opened;
         LONG rc = fpRegQueryValueA(realParent, lpSubKey, lpData, lpcbData);
         fpRegCloseKey(realParent);
-        return rc;
+        DWORD cb = lpcbData ? (DWORD)*lpcbData : 0;
+        const BYTE* outData =
+            (rc == ERROR_SUCCESS && lpData && lpcbData) ? reinterpret_cast<const BYTE*>(lpData) : nullptr;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueA", full, L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
       }
     }
-    return ERROR_FILE_NOT_FOUND;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueA", full, L"(Default)", ERROR_FILE_NOT_FOUND, true, REG_SZ, nullptr, 0, false);
   }
   BypassGuard guard;
-  return fpRegQueryValueA(realParent, lpSubKey, lpData, lpcbData);
+  LONG rc = fpRegQueryValueA(realParent, lpSubKey, lpData, lpcbData);
+  DWORD cb = lpcbData ? (DWORD)*lpcbData : 0;
+  const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? reinterpret_cast<const BYTE*>(lpData) : nullptr;
+  return TraceReadResultAndReturn(
+      L"RegQueryValueA", full, L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
 }
 
 // --- ANSI hooks (Reg*ExA) ---
@@ -1937,9 +2112,14 @@ LONG WINAPI Hook_RegQueryValueExA(HKEY hKey,
   }
   std::wstring keyPath = KeyPathFromHandle(hKey);
   std::wstring valueName = lpValueName ? AnsiToWide(lpValueName, -1) : std::wstring();
-  TraceApiEvent(L"RegQueryValueExA", L"query_value", keyPath, valueName, L"<read>");
   if (keyPath.empty()) {
-    return fpRegQueryValueExA(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
+    DWORD typeLocal = 0;
+    LPDWORD typeOut = lpType ? lpType : &typeLocal;
+    LONG rc = fpRegQueryValueExA(hKey, lpValueName, lpReserved, typeOut, lpData, lpcbData);
+    DWORD cb = lpcbData ? *lpcbData : 0;
+    const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueExA", keyPath, valueName, rc, true, *typeOut, outData, cb, lpData == nullptr);
   }
 
   EnsureStoreOpen();
@@ -1948,10 +2128,12 @@ LONG WINAPI Hook_RegQueryValueExA(HKEY hKey,
     auto v = g_store.GetValue(keyPath, valueName);
     if (v.has_value()) {
       if (v->isDeleted) {
-        return ERROR_FILE_NOT_FOUND;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueExA", keyPath, valueName, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
       }
       if (!lpcbData) {
-        return ERROR_INVALID_PARAMETER;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueExA", keyPath, valueName, ERROR_INVALID_PARAMETER, true, (DWORD)v->type, nullptr, 0, false);
       }
       DWORD type = (DWORD)v->type;
       if (lpType) {
@@ -1961,17 +2143,20 @@ LONG WINAPI Hook_RegQueryValueExA(HKEY hKey,
       DWORD needed = (DWORD)outBytes.size();
       if (!lpData) {
         *lpcbData = needed;
-        return ERROR_SUCCESS;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueExA", keyPath, valueName, ERROR_SUCCESS, true, type, nullptr, needed, true);
       }
       if (*lpcbData < needed) {
         *lpcbData = needed;
-        return ERROR_MORE_DATA;
+        return TraceReadResultAndReturn(
+            L"RegQueryValueExA", keyPath, valueName, ERROR_MORE_DATA, true, type, nullptr, needed, false);
       }
       if (needed) {
         std::memcpy(lpData, outBytes.data(), needed);
       }
       *lpcbData = needed;
-      return ERROR_SUCCESS;
+      return TraceReadResultAndReturn(
+          L"RegQueryValueExA", keyPath, valueName, ERROR_SUCCESS, true, type, lpData, needed, false);
     }
   }
 
@@ -1994,10 +2179,17 @@ LONG WINAPI Hook_RegQueryValueExA(HKEY hKey,
     real = vk->real ? vk->real : nullptr;
   }
   if (!real) {
-    return ERROR_FILE_NOT_FOUND;
+    return TraceReadResultAndReturn(
+        L"RegQueryValueExA", keyPath, valueName, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
   }
   BypassGuard guard;
-  return fpRegQueryValueExA(real, lpValueName, lpReserved, lpType, lpData, lpcbData);
+  DWORD typeLocal = 0;
+  LPDWORD typeOut = lpType ? lpType : &typeLocal;
+  LONG rc = fpRegQueryValueExA(real, lpValueName, lpReserved, typeOut, lpData, lpcbData);
+  DWORD cb = lpcbData ? *lpcbData : 0;
+  const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
+  return TraceReadResultAndReturn(
+      L"RegQueryValueExA", keyPath, valueName, rc, true, *typeOut, outData, cb, lpData == nullptr);
 }
 
 LONG WINAPI Hook_RegDeleteValueA(HKEY hKey, LPCSTR lpValueName) {

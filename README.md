@@ -92,6 +92,31 @@ Optional presets:
 - `windows-x86-mingw-debug`
 - `windows-x64-mingw-release`
 
+## Unit tests
+
+The repository includes a CTest/Catch2 unit test setup under `tests/`.
+
+Native host test run (macOS/Linux/Windows):
+
+`cmake -S . -B build-tests -G Ninja`
+
+`cmake --build build-tests`
+
+`ctest --test-dir build-tests --output-on-failure`
+
+Preset-based test run:
+
+`cmake --preset native-tests`
+
+`cmake --build --preset native-tests`
+
+`ctest --preset native-tests`
+
+Notes:
+
+- Core tests (`hklm_common_tests`) always build.
+- Store tests (`hklm_store_tests`) build when SQLite3 is available to CMake.
+
 ## Run
 
 - Put `hklm_wrapper.exe` and `hklm_shim.dll` next to each other.

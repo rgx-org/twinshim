@@ -65,6 +65,19 @@
         "VCPKG_APPLOCAL_DEPS": "OFF",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/stage"
       }
+    },
+    {
+      "name": "native-tests",
+      "displayName": "Native host unit tests",
+      "description": "Configure native host build for CTest/Catch2 unit tests.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/native-tests",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "HKLM_WRAPPER_ENABLE_TESTS": "ON",
+        "BUILD_TESTING": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -95,6 +108,20 @@
       "targets": [
         "install"
       ]
+    },
+    {
+      "name": "native-tests",
+      "configurePreset": "native-tests",
+      "configuration": "Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "native-tests",
+      "configurePreset": "native-tests",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

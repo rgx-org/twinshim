@@ -56,7 +56,6 @@ private:
   bool EnsureSchema();
   bool Exec(const char* sql);
   bool PrepareAndStep(const char* sql);
-  bool BindText16(void* stmt, int index1, const std::wstring& text);
 
   sqlite3* db_ = nullptr;
 };

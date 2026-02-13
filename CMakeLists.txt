@@ -6,6 +6,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(HKLM_WRAPPER_FETCH_MINHOOK "Fetch MinHook at configure time" ON)
+option(HKLM_WRAPPER_ENABLE_TESTS "Build unit tests" ON)
+
+include(CTest)
 
 if(NOT WIN32)
   message(STATUS "This project targets Windows (Win32 API hooking + process injection).")
@@ -140,4 +143,8 @@ else()
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION bin
   )
+endif()
+
+if(HKLM_WRAPPER_ENABLE_TESTS AND BUILD_TESTING)
+  add_subdirectory(tests)
 endif()
