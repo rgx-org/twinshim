@@ -100,6 +100,8 @@ scripts\cmake-msvc-x86.cmd --build --preset native-tests-windows
 ctest --preset native-tests-windows
 ```
 
+This suite includes a Windows-only workflow test that launches `hklm_wrapper_cli.exe --debug all` around a probe process and verifies both hook debug trace output and persisted SQLite-backed registry data.
+
 ## Run
 
 ```text

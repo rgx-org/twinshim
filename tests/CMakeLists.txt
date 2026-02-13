@@ -80,6 +80,22 @@ else()
 endif()
 
 if(WIN32)
+  add_executable(hklm_workflow_probe
+    workflow_probe_main.cpp
+  )
+
+  target_include_directories(hklm_workflow_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src
+  )
+
+  target_link_libraries(hklm_workflow_probe PRIVATE advapi32)
+  target_compile_definitions(hklm_workflow_probe PRIVATE UNICODE _UNICODE NOMINMAX)
+
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options(hklm_workflow_probe PRIVATE -municode)
+  endif()
+
   add_executable(hklm_shim_utils_tests
     test_registry_hooks_utils.cpp
     ../src/shim/registry_hooks_utils.cpp
@@ -112,7 +128,25 @@ if(WIN32)
     target_compile_definitions(hklm_shim_integration_tests PRIVATE UNICODE _UNICODE NOMINMAX)
 
     catch_discover_tests(hklm_shim_integration_tests DISCOVERY_MODE PRE_TEST)
+
+    add_executable(hklm_shim_workflow_tests
+      test_wrapper_workflow.cpp
+      ../src/common/arg_quote.cpp
+      ../src/common/local_registry_store.cpp
+      ../src/common/path_util.cpp
+      ../src/common/utf8.cpp
+    )
+
+    target_include_directories(hklm_shim_workflow_tests PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/..
+      ${CMAKE_CURRENT_SOURCE_DIR}/../src
+    )
+
+    target_link_libraries(hklm_shim_workflow_tests PRIVATE Catch2::Catch2WithMain ${_sqlite_target} advapi32)
+    target_compile_definitions(hklm_shim_workflow_tests PRIVATE UNICODE _UNICODE NOMINMAX)
+
+    catch_discover_tests(hklm_shim_workflow_tests DISCOVERY_MODE PRE_TEST)
   else()
-    message(STATUS "SQLite3 not found: skipping hklm_shim_integration_tests")
+    message(STATUS "SQLite3 not found: skipping hklm_shim_integration_tests and hklm_shim_workflow_tests")
   endif()
 endif()
