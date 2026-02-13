@@ -14,6 +14,7 @@
 #include <cwctype>
 #include <cstdio>
 #include <thread>
+#include <sstream>
 
 using namespace hklmwrap;
 
@@ -500,7 +501,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   debugBridge.Stop();
   DWORD exitCode = 0;
   GetExitCodeProcess(pi.hProcess, &exitCode);
-  TraceLine(L"wrapper returning exit code " + std::to_wstring((unsigned long)exitCode), traceEnabled);
+  std::wstringstream exitMsg;
+  exitMsg << L"wrapper returning exit code " << static_cast<unsigned long>(exitCode)
+          << L" (0x" << std::hex << std::uppercase << static_cast<unsigned long>(exitCode) << L")";
+  TraceLine(exitMsg.str(), traceEnabled);
   CloseHandle(pi.hProcess);
   return (int)exitCode;
 }
