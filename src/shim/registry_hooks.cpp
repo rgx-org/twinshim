@@ -35,6 +35,17 @@ std::unordered_set<VirtualKey*> g_virtualKeys;
 
 thread_local bool g_bypass = false;
 
+bool ShouldInstallExtendedHooks() {
+  wchar_t modeBuf[64]{};
+  DWORD modeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
+  if (!modeLen || modeLen >= (sizeof(modeBuf) / sizeof(modeBuf[0]))) {
+    return false;
+  }
+  std::wstring mode(modeBuf, modeBuf + modeLen);
+  std::transform(mode.begin(), mode.end(), mode.begin(), [](wchar_t ch) { return (wchar_t)std::towlower(ch); });
+  return mode == L"all" || mode == L"full" || mode == L"extended";
+}
+
 struct BypassGuard {
   BypassGuard() { g_bypass = true; }
   ~BypassGuard() { g_bypass = false; }
@@ -366,6 +377,8 @@ bool InstallRegistryHooks() {
     return false;
   }
 
+  const bool extended = ShouldInstallExtendedHooks();
+
   auto ok = true;
   ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyExW", &Hook_RegOpenKeyExW, &fpRegOpenKeyExW);
   ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyExW", &Hook_RegCreateKeyExW, &fpRegCreateKeyExW);
@@ -378,34 +391,36 @@ bool InstallRegistryHooks() {
   // Optional on older systems.
   (void)CreateHookApiTyped(L"advapi32", "RegDeleteKeyExW", &Hook_RegDeleteKeyExW, &fpRegDeleteKeyExW);
 
-  ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyExA", &Hook_RegOpenKeyExA, &fpRegOpenKeyExA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyExA", &Hook_RegCreateKeyExA, &fpRegCreateKeyExA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegSetValueExA", &Hook_RegSetValueExA, &fpRegSetValueExA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueExA", &Hook_RegQueryValueExA, &fpRegQueryValueExA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegDeleteValueA", &Hook_RegDeleteValueA, &fpRegDeleteValueA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegDeleteKeyA", &Hook_RegDeleteKeyA, &fpRegDeleteKeyA);
+  if (extended) {
+    ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyExA", &Hook_RegOpenKeyExA, &fpRegOpenKeyExA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyExA", &Hook_RegCreateKeyExA, &fpRegCreateKeyExA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegSetValueExA", &Hook_RegSetValueExA, &fpRegSetValueExA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueExA", &Hook_RegQueryValueExA, &fpRegQueryValueExA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegDeleteValueA", &Hook_RegDeleteValueA, &fpRegDeleteValueA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegDeleteKeyA", &Hook_RegDeleteKeyA, &fpRegDeleteKeyA);
 
-  ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyW", &Hook_RegOpenKeyW, &fpRegOpenKeyW);
-  ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyA", &Hook_RegOpenKeyA, &fpRegOpenKeyA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyW", &Hook_RegCreateKeyW, &fpRegCreateKeyW);
-  ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyA", &Hook_RegCreateKeyA, &fpRegCreateKeyA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueW", &Hook_RegQueryValueW, &fpRegQueryValueW);
-  ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueA", &Hook_RegQueryValueA, &fpRegQueryValueA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegSetValueW", &Hook_RegSetValueW, &fpRegSetValueW);
-  ok &= CreateHookApiTyped(L"advapi32", "RegSetValueA", &Hook_RegSetValueA, &fpRegSetValueA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyW", &Hook_RegOpenKeyW, &fpRegOpenKeyW);
+    ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyA", &Hook_RegOpenKeyA, &fpRegOpenKeyA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyW", &Hook_RegCreateKeyW, &fpRegCreateKeyW);
+    ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyA", &Hook_RegCreateKeyA, &fpRegCreateKeyA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueW", &Hook_RegQueryValueW, &fpRegQueryValueW);
+    ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueA", &Hook_RegQueryValueA, &fpRegQueryValueA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegSetValueW", &Hook_RegSetValueW, &fpRegSetValueW);
+    ok &= CreateHookApiTyped(L"advapi32", "RegSetValueA", &Hook_RegSetValueA, &fpRegSetValueA);
 
-  ok &= CreateHookApiTyped(L"advapi32", "RegEnumValueW", &Hook_RegEnumValueW, &fpRegEnumValueW);
-  ok &= CreateHookApiTyped(L"advapi32", "RegEnumValueA", &Hook_RegEnumValueA, &fpRegEnumValueA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyExW", &Hook_RegEnumKeyExW, &fpRegEnumKeyExW);
-  ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyExA", &Hook_RegEnumKeyExA, &fpRegEnumKeyExA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyW", &Hook_RegEnumKeyW, &fpRegEnumKeyW);
-  ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyA", &Hook_RegEnumKeyA, &fpRegEnumKeyA);
-  ok &= CreateHookApiTyped(L"advapi32", "RegQueryInfoKeyW", &Hook_RegQueryInfoKeyW, &fpRegQueryInfoKeyW);
-  ok &= CreateHookApiTyped(L"advapi32", "RegQueryInfoKeyA", &Hook_RegQueryInfoKeyA, &fpRegQueryInfoKeyA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegEnumValueW", &Hook_RegEnumValueW, &fpRegEnumValueW);
+    ok &= CreateHookApiTyped(L"advapi32", "RegEnumValueA", &Hook_RegEnumValueA, &fpRegEnumValueA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyExW", &Hook_RegEnumKeyExW, &fpRegEnumKeyExW);
+    ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyExA", &Hook_RegEnumKeyExA, &fpRegEnumKeyExA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyW", &Hook_RegEnumKeyW, &fpRegEnumKeyW);
+    ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyA", &Hook_RegEnumKeyA, &fpRegEnumKeyA);
+    ok &= CreateHookApiTyped(L"advapi32", "RegQueryInfoKeyW", &Hook_RegQueryInfoKeyW, &fpRegQueryInfoKeyW);
+    ok &= CreateHookApiTyped(L"advapi32", "RegQueryInfoKeyA", &Hook_RegQueryInfoKeyA, &fpRegQueryInfoKeyA);
 
-  // Optional on older systems.
-  (void)CreateHookApiTyped(L"advapi32", "RegSetKeyValueW", &Hook_RegSetKeyValueW, &fpRegSetKeyValueW);
-  (void)CreateHookApiTyped(L"advapi32", "RegSetKeyValueA", &Hook_RegSetKeyValueA, &fpRegSetKeyValueA);
+    // Optional on older systems.
+    (void)CreateHookApiTyped(L"advapi32", "RegSetKeyValueW", &Hook_RegSetKeyValueW, &fpRegSetKeyValueW);
+    (void)CreateHookApiTyped(L"advapi32", "RegSetKeyValueA", &Hook_RegSetKeyValueA, &fpRegSetKeyValueA);
+  }
 
   if (!ok) {
     MH_Uninitialize();
