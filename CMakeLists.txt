@@ -50,20 +50,29 @@ else()
 
   target_link_libraries(hklm_common PUBLIC advapi32)
 
-  # --- SQLite3 dependency (prefer vcpkg or system installs) ---
+  # --- SQLite3 dependency (prefer config packages over FindSQLite3 module mode) ---
   set(_sqlite_target "")
 
-  find_package(SQLite3 QUIET)
-  if(TARGET SQLite::SQLite3)
-    set(_sqlite_target SQLite::SQLite3)
-  elseif(TARGET SQLite3::SQLite3)
-    set(_sqlite_target SQLite3::SQLite3)
+  find_package(unofficial-sqlite3 CONFIG QUIET)
+  if(TARGET unofficial::sqlite3::sqlite3)
+    set(_sqlite_target unofficial::sqlite3::sqlite3)
   endif()
 
   if(_sqlite_target STREQUAL "")
-    find_package(unofficial-sqlite3 CONFIG QUIET)
-    if(TARGET unofficial::sqlite3::sqlite3)
-      set(_sqlite_target unofficial::sqlite3::sqlite3)
+    find_package(SQLite3 CONFIG QUIET)
+    if(TARGET SQLite::SQLite3)
+      set(_sqlite_target SQLite::SQLite3)
+    elseif(TARGET SQLite3::SQLite3)
+      set(_sqlite_target SQLite3::SQLite3)
+    endif()
+  endif()
+
+  if(_sqlite_target STREQUAL "")
+    find_package(SQLite3 QUIET MODULE)
+    if(TARGET SQLite::SQLite3)
+      set(_sqlite_target SQLite::SQLite3)
+    elseif(TARGET SQLite3::SQLite3)
+      set(_sqlite_target SQLite3::SQLite3)
     endif()
   endif()
 
