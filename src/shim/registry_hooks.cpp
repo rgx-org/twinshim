@@ -395,6 +395,8 @@ bool InstallRegistryHooks() {
   const bool extended = ShouldInstallExtendedHooks();
 
   auto ok = true;
+  // Core W/Unicode hooks (default): include all common handle consumers so
+  // virtual HKEY handles never leak into unhooked advapi32 entry points.
   ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyExW", &Hook_RegOpenKeyExW, &fpRegOpenKeyExW);
   ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyExW", &Hook_RegCreateKeyExW, &fpRegCreateKeyExW);
   ok &= CreateHookApiTyped(L"advapi32", "RegCloseKey", &Hook_RegCloseKey, &fpRegCloseKey);
@@ -402,6 +404,17 @@ bool InstallRegistryHooks() {
   ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueExW", &Hook_RegQueryValueExW, &fpRegQueryValueExW);
   ok &= CreateHookApiTyped(L"advapi32", "RegDeleteValueW", &Hook_RegDeleteValueW, &fpRegDeleteValueW);
   ok &= CreateHookApiTyped(L"advapi32", "RegDeleteKeyW", &Hook_RegDeleteKeyW, &fpRegDeleteKeyW);
+  ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyW", &Hook_RegOpenKeyW, &fpRegOpenKeyW);
+  ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyW", &Hook_RegCreateKeyW, &fpRegCreateKeyW);
+  ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueW", &Hook_RegQueryValueW, &fpRegQueryValueW);
+  ok &= CreateHookApiTyped(L"advapi32", "RegSetValueW", &Hook_RegSetValueW, &fpRegSetValueW);
+  ok &= CreateHookApiTyped(L"advapi32", "RegEnumValueW", &Hook_RegEnumValueW, &fpRegEnumValueW);
+  ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyExW", &Hook_RegEnumKeyExW, &fpRegEnumKeyExW);
+  ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyW", &Hook_RegEnumKeyW, &fpRegEnumKeyW);
+  ok &= CreateHookApiTyped(L"advapi32", "RegQueryInfoKeyW", &Hook_RegQueryInfoKeyW, &fpRegQueryInfoKeyW);
+
+  // Optional on older systems.
+  (void)CreateHookApiTyped(L"advapi32", "RegSetKeyValueW", &Hook_RegSetKeyValueW, &fpRegSetKeyValueW);
 
   // Optional on older systems.
   (void)CreateHookApiTyped(L"advapi32", "RegDeleteKeyExW", &Hook_RegDeleteKeyExW, &fpRegDeleteKeyExW);
@@ -414,26 +427,17 @@ bool InstallRegistryHooks() {
     ok &= CreateHookApiTyped(L"advapi32", "RegDeleteValueA", &Hook_RegDeleteValueA, &fpRegDeleteValueA);
     ok &= CreateHookApiTyped(L"advapi32", "RegDeleteKeyA", &Hook_RegDeleteKeyA, &fpRegDeleteKeyA);
 
-    ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyW", &Hook_RegOpenKeyW, &fpRegOpenKeyW);
     ok &= CreateHookApiTyped(L"advapi32", "RegOpenKeyA", &Hook_RegOpenKeyA, &fpRegOpenKeyA);
-    ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyW", &Hook_RegCreateKeyW, &fpRegCreateKeyW);
     ok &= CreateHookApiTyped(L"advapi32", "RegCreateKeyA", &Hook_RegCreateKeyA, &fpRegCreateKeyA);
-    ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueW", &Hook_RegQueryValueW, &fpRegQueryValueW);
     ok &= CreateHookApiTyped(L"advapi32", "RegQueryValueA", &Hook_RegQueryValueA, &fpRegQueryValueA);
-    ok &= CreateHookApiTyped(L"advapi32", "RegSetValueW", &Hook_RegSetValueW, &fpRegSetValueW);
     ok &= CreateHookApiTyped(L"advapi32", "RegSetValueA", &Hook_RegSetValueA, &fpRegSetValueA);
 
-    ok &= CreateHookApiTyped(L"advapi32", "RegEnumValueW", &Hook_RegEnumValueW, &fpRegEnumValueW);
     ok &= CreateHookApiTyped(L"advapi32", "RegEnumValueA", &Hook_RegEnumValueA, &fpRegEnumValueA);
-    ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyExW", &Hook_RegEnumKeyExW, &fpRegEnumKeyExW);
     ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyExA", &Hook_RegEnumKeyExA, &fpRegEnumKeyExA);
-    ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyW", &Hook_RegEnumKeyW, &fpRegEnumKeyW);
     ok &= CreateHookApiTyped(L"advapi32", "RegEnumKeyA", &Hook_RegEnumKeyA, &fpRegEnumKeyA);
-    ok &= CreateHookApiTyped(L"advapi32", "RegQueryInfoKeyW", &Hook_RegQueryInfoKeyW, &fpRegQueryInfoKeyW);
     ok &= CreateHookApiTyped(L"advapi32", "RegQueryInfoKeyA", &Hook_RegQueryInfoKeyA, &fpRegQueryInfoKeyA);
 
     // Optional on older systems.
-    (void)CreateHookApiTyped(L"advapi32", "RegSetKeyValueW", &Hook_RegSetKeyValueW, &fpRegSetKeyValueW);
     (void)CreateHookApiTyped(L"advapi32", "RegSetKeyValueA", &Hook_RegSetKeyValueA, &fpRegSetKeyValueA);
   }
 

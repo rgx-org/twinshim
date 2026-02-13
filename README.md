@@ -247,7 +247,10 @@ WHERE key_path='HKLM\\Software\\MyApp'
 
 - Wrapper and shim DLL bitness must match target process bitness.
 - For native MSVC x86 builds, use `scripts\cmake-msvc-x86.cmd` (or `scripts\build-windows-msvc-x86.cmd`) so the Visual Studio toolchain is initialized with `-arch=x86`. Running CMake directly from an x64 dev shell can produce x64 binaries, which will fail to inject into x86 targets.
-- Hook scope defaults to a conservative core (`Reg*ExW` + close/delete) for maximum process compatibility. To enable the full legacy/ANSI hook set, set `HKLM_WRAPPER_HOOK_MODE=all` before launch. For diagnostics/compatibility fallback, disable hooks entirely with `HKLM_WRAPPER_HOOK_MODE=off`.
+- Hook mode is runtime-selectable with `HKLM_WRAPPER_HOOK_MODE`:
+  - default (unset): wide-char core + legacy/key-info/enum hooks (no ANSI `*A` hooks)
+  - `all`/`full`/`extended`: enable full ANSI + wide hook set
+  - `off`/`none`/`disabled`: inject shim but skip hook installation (diagnostics/fallback)
 - macOS/Linux cross-build validates compile/link only; runtime injection/hooking must be validated natively on Windows.
 - Hooks a small set of APIs (both `*W` and `*A` where applicable):
   - Open/create keys: `RegOpenKey(Ex)`, `RegCreateKey(Ex)`

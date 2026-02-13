@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <thread>
 #include <sstream>
+#include <atomic>
 
 using namespace hklmwrap;
 
@@ -220,6 +221,7 @@ struct DebugPipeBridge {
   HANDLE pipe = INVALID_HANDLE_VALUE;
   std::thread reader;
   std::wstring pipeName;
+  std::atomic<bool> stopping{false};
 
   bool Start() {
     wchar_t pipePath[256]{};
@@ -239,25 +241,33 @@ struct DebugPipeBridge {
     }
 
     reader = std::thread([this] {
-      BOOL connected = ConnectNamedPipe(pipe, nullptr);
-      if (!connected && GetLastError() != ERROR_PIPE_CONNECTED) {
-        return;
-      }
-
-      char buffer[1024];
-      while (true) {
-        DWORD bytesRead = 0;
-        if (!ReadFile(pipe, buffer, (DWORD)sizeof(buffer), &bytesRead, nullptr) || bytesRead == 0) {
-          break;
+      while (!stopping.load()) {
+        BOOL connected = ConnectNamedPipe(pipe, nullptr);
+        if (!connected && GetLastError() != ERROR_PIPE_CONNECTED) {
+          if (stopping.load()) {
+            break;
+          }
+          Sleep(10);
+          continue;
         }
-        fwrite(buffer, 1, bytesRead, stdout);
-        fflush(stdout);
+
+        char buffer[1024];
+        while (!stopping.load()) {
+          DWORD bytesRead = 0;
+          if (!ReadFile(pipe, buffer, (DWORD)sizeof(buffer), &bytesRead, nullptr) || bytesRead == 0) {
+            break;
+          }
+          fwrite(buffer, 1, bytesRead, stdout);
+          fflush(stdout);
+        }
+        DisconnectNamedPipe(pipe);
       }
     });
     return true;
   }
 
   void Stop() {
+    stopping.store(true);
     if (pipe != INVALID_HANDLE_VALUE && !pipeName.empty()) {
       HANDLE unblockClient = CreateFileW(pipeName.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
       if (unblockClient != INVALID_HANDLE_VALUE) {
@@ -268,7 +278,6 @@ struct DebugPipeBridge {
       reader.join();
     }
     if (pipe != INVALID_HANDLE_VALUE) {
-      DisconnectNamedPipe(pipe);
       CloseHandle(pipe);
       pipe = INVALID_HANDLE_VALUE;
     }
