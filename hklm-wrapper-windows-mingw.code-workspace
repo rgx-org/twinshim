@@ -1,0 +1,24 @@
+{
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "cmake.useCMakePresets": "always",
+    "cmake.configureOnOpen": true,
+    "cmake.configurePreset": "windows-x86-mingw-release",
+    "cmake.buildPreset": "windows-x86-mingw-release",
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.compilerPath": "/usr/local/opt/homebrew/bin/i686-w64-mingw32-g++",
+    "C_Cpp.default.intelliSenseMode": "windows-gcc-x86",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/windows-x86-mingw-release/compile_commands.json",
+    "clangd.arguments": [
+      "--compile-commands-dir=${workspaceFolder}/build/windows-x86-mingw-release",
+      "--query-driver=/usr/local/opt/homebrew/bin/*mingw*"
+    ],
+    "chat.tools.terminal.autoApprove": {
+      "cmake": true
+    }
+  }
+}

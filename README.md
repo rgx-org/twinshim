@@ -1,212 +1,125 @@
 # hklm-wrapper
 
-Simple Win32 wrapper that launches a target EXE supplied on the command line and virtualizes **HKLM** registry access into a per-target SQLite database.
+Win32 wrapper that launches a target EXE, injects `hklm_shim.dll`, and virtualizes `HKLM` registry access into a local SQLite DB.
 
-## What you get
+## Binaries
 
-- `hklm_wrapper.exe` (GUI launcher): starts the provided target process, injects `hklm_shim.dll`, and forwards all trailing arguments.
-- `hklm_shim.dll` (injected): hooks common `Reg*W` APIs and stores HKLM writes/deletes into a SQLite DB; reads prefer the local DB and fall back to the real registry.
-- `hklmreg.exe` (CLI): basic `REG`-like utility to `add`, `delete`, `export`, `import` values in the local HKLM store.
+- `hklm_wrapper.exe`: launcher/injector.
+- `hklm_shim.dll`: hooked registry layer.
+- `hklmreg.exe`: CLI for local DB add/delete/export/import.
 
-The SQLite database name is: `<TargetExeName>-HKLM.sqlite` and is created next to `hklm_wrapper.exe`.
+Default DB name: `<TargetExeName>-HKLM.sqlite` (next to `hklm_wrapper.exe`).
 
-## Configure (compile-time)
+## Workspace switching (recommended)
 
-Edit [config/wrapper_config.h](config/wrapper_config.h) as needed:
+Use the workspace file that matches your task:
 
-- `HKLM_WRAPPER_WORKING_DIR` (optional override; default is target EXE directory)
-- `HKLM_WRAPPER_SHIM_DLL_NAME`
-- `HKLM_WRAPPER_IGNORE_EMBEDDED_MANIFEST` (default `1`; sets `__COMPAT_LAYER=RunAsInvoker` when launching target)
+- `hklm-wrapper-native.code-workspace`
+  - macOS/Linux native development and fast unit-test iteration.
+- `hklm-wrapper-windows-mingw.code-workspace`
+  - Win32-target IntelliSense/cross-build on macOS/Linux.
+
+In VS Code: **File → Open Workspace from File...**
+
+Practical flow:
+1. Work mostly in the native workspace.
+2. Switch to the MinGW workspace when editing Win32 shim/hooking code.
+3. Validate runtime behavior natively on Windows before release.
 
 ## Build
 
-This project uses CMake + vcpkg for SQLite3.
+This repo uses CMake presets and vcpkg (`sqlite3` comes from `vcpkg.json`).
 
-### SQLite3 dependency behavior (important)
+### macOS/Linux: cross-compile Windows x86 (MinGW)
 
-- `vcpkg.json` already declares `sqlite3`, so you usually do **not** install SQLite manually.
-- SQLite is auto-provisioned only when CMake is configured with the vcpkg toolchain (`vcpkg.cmake`, directly or via this repo's wrapper toolchain).
-- If you configure without that toolchain, CMake will fail with `SQLite3 not found`.
-- If auto-provisioning does not occur for your environment, install explicitly:
+Install host tools:
 
-`%VCPKG_ROOT%\\vcpkg install sqlite3:x86-windows`
+- macOS: `brew install cmake ninja git pkg-config mingw-w64`
+- Ubuntu/Debian: `sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build git curl zip unzip tar pkg-config mingw-w64`
 
-### Native Windows build
+Set up vcpkg:
 
-For a 32-bit native Windows build (Win32), use the helper scripts from **any terminal** (cmd, PowerShell, Git Bash, etc.).
+```bash
+git clone https://github.com/microsoft/vcpkg.git ~/vcpkg
+~/vcpkg/bootstrap-vcpkg.sh
+export VCPKG_ROOT=~/vcpkg
+```
 
-1) Install vcpkg and set `VCPKG_ROOT` (optional if it lives at `%USERPROFILE%\\vcpkg`).
+Configure/build:
 
-2) Configure + build:
+```bash
+cmake --preset windows-x86-mingw-release
+cmake --build --preset windows-x86-mingw-release
+```
 
-`scripts\\cmake-msvc-x86.cmd --preset windows-x86-msvc-release`
+Staging output:
 
-`scripts\\cmake-msvc-x86.cmd --build --preset windows-x86-msvc-release`
+```bash
+cmake --preset windows-x86-mingw-release-stage
+cmake --build --preset windows-x86-mingw-release-stage
+cmake --build --preset windows-x86-mingw-release-stage-install
+```
 
-Artifacts are emitted under `build/windows-x86-msvc-release/Release`.
+Expected runtime artifacts in `stage/bin`:
+- `hklm_wrapper.exe`
+- `hklm_shim.dll`
+- `hklmreg.exe`
 
-If you want a stable runtime output directory (`stage/bin`), use:
+### Windows native (MSVC x86)
 
-`scripts\\build-windows-msvc-x86.cmd`
+Helper scripts:
 
-The helper scripts auto-detect Visual Studio via `vswhere`, call `VsDevCmd.bat` (`-arch=x86`), then invoke CMake.
-If `vswhere` is unavailable or fails, they fall back to Visual Studio metadata under `C:\ProgramData\Microsoft\VisualStudio`.
+```cmd
+scripts\cmake-msvc-x86.cmd --preset windows-x86-msvc-release
+scripts\cmake-msvc-x86.cmd --build --preset windows-x86-msvc-release
+```
 
-Optional: direct preset flow (requires VS developer shell)
+Staging helper:
 
-`cmake --preset windows-x86-msvc-release`
+```cmd
+scripts\build-windows-msvc-x86.cmd
+```
 
-`cmake --build --preset windows-x86-msvc-release`
+## Tests
 
-If you want a stable runtime output directory (`stage/bin`), use the 3-command staging flow:
+### Native host tests (macOS/Linux)
 
-`cmake --preset windows-x86-msvc-release-stage`
+```bash
+cmake --preset native-tests
+cmake --build --preset native-tests
+ctest --preset native-tests
+```
 
-`cmake --build --preset windows-x86-msvc-release-stage`
+### Native Windows tests
 
-`cmake --build --preset windows-x86-msvc-release-stage-install`
-
-Git Bash note: if direct `.cmd` invocation is blocked by shell policy, run via `cmd.exe`:
-
-`cmd.exe /d /c scripts\\cmake-msvc-x86.cmd --preset windows-x86-msvc-release`
-
-Expected output path:
-
-- `stage/bin/hklm_wrapper.exe`
-- `stage/bin/hklm_shim.dll`
-- `stage/bin/hklmreg.exe`
-
-#### Troubleshooting: `could not find any instance of Visual Studio`
-
-This typically happens when CMake presets are tied to a specific Visual Studio generator version.
-
-This repository’s MSVC preset now uses `Ninja Multi-Config` + `cl.exe` instead of a hard-coded Visual Studio generator, which avoids version-mismatch failures (for example VS 2026 installed but preset requests VS 2022).
-
-If you still hit toolchain errors:
-
-- Ensure C++ build tools are installed in Visual Studio (`Desktop development with C++`).
-- Use `scripts\\cmake-msvc-x86.cmd` (or `scripts\\build-windows-msvc-x86.cmd`) so VS env is initialized automatically.
-- The helper scripts try `vswhere` first, then `C:\ProgramData\Microsoft\VisualStudio` metadata as a fallback.
-- Confirm `VCPKG_ROOT` points to a valid vcpkg clone.
-
-### Cross-compile from macOS/Linux to Win32 (x86)
-
-The repo includes:
-
-- `cmake/toolchains/mingw-w64-i686.cmake` (Win32 target toolchain)
-- `CMakePresets.json` preset `windows-x86-mingw-release`
-
-#### 1) Install required host tooling
-
-macOS (Homebrew):
-
-`brew install cmake ninja git pkg-config mingw-w64`
-
-Linux (Debian/Ubuntu):
-
-`sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build git curl zip unzip tar pkg-config mingw-w64`
-
-#### 2) Install vcpkg and export `VCPKG_ROOT`
-
-`git clone https://github.com/microsoft/vcpkg.git ~/vcpkg`
-
-`~/vcpkg/bootstrap-vcpkg.sh`
-
-`export VCPKG_ROOT=~/vcpkg`
-
-If `VCPKG_ROOT` is not set, the provided CMake presets automatically fall back to `~/vcpkg`.
-
-#### 3) Configure + build with preset
-
-`cmake --preset windows-x86-mingw-release`
-
-`cmake --build --preset windows-x86-mingw-release`
-
-Artifacts are emitted under `build/windows-x86-mingw-release`.
-
-### Staging package output (x86 MinGW release)
-
-Use the staging preset flow to produce only runtime binaries in a stable directory:
-
-`cmake --preset windows-x86-mingw-release-stage`
-
-`cmake --build --preset windows-x86-mingw-release-stage`
-
-`cmake --build --preset windows-x86-mingw-release-stage-install`
-
-Expected output path:
-
-- `stage/bin/hklm_wrapper.exe`
-- `stage/bin/hklm_shim.dll`
-- `stage/bin/hklmreg.exe`
-
-Optional presets:
-
-- `windows-x86-msvc-release`
-- `windows-x86-mingw-debug`
-- `windows-x64-mingw-release`
-
-## Unit tests
-
-The repository includes a CTest/Catch2 unit test setup under `tests/`.
-
-Native host test run (macOS/Linux):
-
-`cmake --preset native-tests`
-
-`cmake --build --preset native-tests`
-
-`ctest --preset native-tests`
-
-Windows (PowerShell/cmd, recommended):
-
-`scripts\\cmake-msvc-x86.cmd --preset native-tests-windows`
-
-`scripts\\cmake-msvc-x86.cmd --build --preset native-tests-windows`
-
-`ctest --preset native-tests-windows`
-
-Windows note:
-
-- The `native-tests` preset uses the `Ninja` generator and does not force vcpkg toolchain integration.
-- The `native-tests-windows` preset wires vcpkg (`x86-windows`) so SQLite3 can be resolved from `vcpkg.json`.
-- If you run `cmake --preset native-tests` directly, ensure both `ninja` and a working C/C++ toolchain are on `PATH`, and pass a vcpkg toolchain if you need SQLite-backed tests.
-- The helper script initializes the MSVC developer environment automatically, which resolves missing compiler errors.
-
-Notes:
-
-- Core tests (`hklm_common_tests`) always build.
-- Store tests (`hklm_store_tests`) build when SQLite3 is available to CMake.
+```cmd
+scripts\cmake-msvc-x86.cmd --preset native-tests-windows
+scripts\cmake-msvc-x86.cmd --build --preset native-tests-windows
+ctest --preset native-tests-windows
+```
 
 ## Run
 
-- Put `hklm_wrapper.exe` and `hklm_shim.dll` next to each other.
-- Run `hklm_wrapper.exe <target_exe> [target arguments...]`.
-- Optional debug tracing: `hklm_wrapper.exe --debug <api1,api2,...|all> <target_exe> [target arguments...]`.
-- By default, the wrapper launches targets with `RunAsInvoker` compatibility so embedded elevation manifests are ignored.
+```text
+hklm_wrapper.exe [--debug <api-list|all>] <target_exe> [target args...]
+```
 
 Examples:
 
-`hklm_wrapper.exe C:\\Path\\To\\TargetApp.exe`
+```text
+hklm_wrapper.exe C:\Path\To\TargetApp.exe
+hklm_wrapper.exe --debug RegOpenKey,RegQueryValue C:\Path\To\TargetApp.exe
+hklm_wrapper.exe --debug all C:\Path\To\TargetApp.exe
+```
 
-`hklm_wrapper.exe C:\\Path\\To\\TargetApp.exe --mode test --config "C:\\path with spaces\\cfg.json"`
+## hklmreg quick examples
 
-`hklm_wrapper.exe --debug RegOpenKey,RegQueryValue C:\\Path\\To\\TargetApp.exe`
-
-`hklm_wrapper.exe --debug all C:\\Path\\To\\TargetApp.exe`
-
-`--debug` prints a line to stdout each time a selected hooked API is called in the target process.
-For base names, non-`Ex` and `Ex` are both matched (for example `RegQueryValue` matches `RegQueryValue` and `RegQueryValueEx`; `RegOpenKey` matches `RegOpenKey` and `RegOpenKeyEx`).
-
-## hklmreg examples
-
-`hklmreg --db .\\TargetApp-HKLM.sqlite add HKLM\\Software\\MyApp /v Test /t REG_SZ /d hello /f`
-
-`hklmreg --db .\\TargetApp-HKLM.sqlite delete HKLM\\Software\\MyApp /v Test /f`
-
-`hklmreg --db .\\TargetApp-HKLM.sqlite export out.reg HKLM\\Software\\MyApp`
-
-`hklmreg --db .\\TargetApp-HKLM.sqlite import out.reg`
+```text
+hklmreg --db .\TargetApp-HKLM.sqlite add HKLM\Software\MyApp /v Test /t REG_SZ /d hello /f
+hklmreg --db .\TargetApp-HKLM.sqlite delete HKLM\Software\MyApp /v Test /f
+hklmreg --db .\TargetApp-HKLM.sqlite export out.reg HKLM\Software\MyApp
+hklmreg --db .\TargetApp-HKLM.sqlite import out.reg
+```
 
 ## SQLite schema (direct DB format)
 
@@ -324,6 +237,8 @@ WHERE key_path='HKLM\\Software\\MyApp'
 
 ## Notes / limitations
 
+- Wrapper and shim DLL bitness must match target process bitness.
+- macOS/Linux cross-build validates compile/link only; runtime injection/hooking must be validated natively on Windows.
 - Hooks a small set of APIs (both `*W` and `*A` where applicable):
   - Open/create keys: `RegOpenKey(Ex)`, `RegCreateKey(Ex)`
   - Close key handles: `RegCloseKey`
@@ -331,7 +246,4 @@ WHERE key_path='HKLM\\Software\\MyApp'
   - Delete keys/values: `RegDeleteValue`, `RegDeleteKey` (and `RegDeleteKeyEx` if present)
   - Enumerate/query metadata: `RegEnumValue`, `RegEnumKey(Ex)`, `RegQueryInfoKey`
 - No ACL/security descriptor handling.
-- Hooks both wide and ANSI variants for the functions above (`*W` and `*A`).
 - In `--debug` mode, tracing stays active for the full target process lifetime (wrapper waits for target exit).
-- Wrapper + shim must match the target bitness (x86 target needs x86 wrapper+DLL; x64 target needs x64 wrapper+DLL).
-- Cross-compiling on macOS/Linux only builds Windows binaries; run/test them on Windows (or under Wine).

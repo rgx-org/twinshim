@@ -115,6 +115,13 @@ else()
     src/shim/dllmain.cpp
     src/shim/registry_hooks.cpp
     src/shim/registry_hooks.h
+    src/shim/registry_hooks_hooks_core.inl
+    src/shim/registry_hooks_hooks_legacy.inl
+    src/shim/registry_hooks_hooks_ansi.inl
+    src/shim/registry_hooks_trace.cpp
+    src/shim/registry_hooks_trace.h
+    src/shim/registry_hooks_utils.cpp
+    src/shim/registry_hooks_utils.h
   )
   set_target_properties(hklm_shim PROPERTIES PREFIX "")
 
