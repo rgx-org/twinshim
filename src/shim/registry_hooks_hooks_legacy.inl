@@ -1,38 +1,26 @@
 // --- Old (non-Ex) APIs and extra operations ---
 
 LONG WINAPI Hook_RegOpenKeyW(HKEY hKey, LPCWSTR lpSubKey, PHKEY phkResult) {
-  std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring sub = lpSubKey ? CanonicalizeSubKey(lpSubKey) : L"";
-  std::wstring full = base.empty() ? (sub.empty() ? L"(native)" : sub) : (sub.empty() ? base : JoinKeyPath(base, sub));
-  TraceApiEvent(L"RegOpenKeyW", L"open_key", full, L"-", L"-");
+  TraceApiEvent(L"RegOpenKeyW", L"open_key", KeyPathFromHandle(hKey), L"-", L"-");
   InternalDispatchGuard internalGuard;
   return Hook_RegOpenKeyExW(hKey, lpSubKey, 0, KEY_READ, phkResult);
 }
 
 LONG WINAPI Hook_RegOpenKeyA(HKEY hKey, LPCSTR lpSubKey, PHKEY phkResult) {
-  std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring subW = lpSubKey ? CanonicalizeSubKey(AnsiToWide(lpSubKey, -1)) : L"";
-  std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
-  TraceApiEvent(L"RegOpenKeyA", L"open_key", full, L"-", L"-");
+  TraceApiEvent(L"RegOpenKeyA", L"open_key", KeyPathFromHandle(hKey), L"-", L"-");
   InternalDispatchGuard internalGuard;
   return Hook_RegOpenKeyExA(hKey, lpSubKey, 0, KEY_READ, phkResult);
 }
 
 LONG WINAPI Hook_RegCreateKeyW(HKEY hKey, LPCWSTR lpSubKey, PHKEY phkResult) {
-  std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring sub = lpSubKey ? CanonicalizeSubKey(lpSubKey) : L"";
-  std::wstring full = base.empty() ? (sub.empty() ? L"(native)" : sub) : (sub.empty() ? base : JoinKeyPath(base, sub));
-  TraceApiEvent(L"RegCreateKeyW", L"create_key", full, L"-", L"-");
+  TraceApiEvent(L"RegCreateKeyW", L"create_key", KeyPathFromHandle(hKey), L"-", L"-");
   InternalDispatchGuard internalGuard;
   DWORD disp = 0;
   return Hook_RegCreateKeyExW(hKey, lpSubKey, 0, nullptr, 0, KEY_READ | KEY_WRITE, nullptr, phkResult, &disp);
 }
 
 LONG WINAPI Hook_RegCreateKeyA(HKEY hKey, LPCSTR lpSubKey, PHKEY phkResult) {
-  std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring subW = lpSubKey ? CanonicalizeSubKey(AnsiToWide(lpSubKey, -1)) : L"";
-  std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
-  TraceApiEvent(L"RegCreateKeyA", L"create_key", full, L"-", L"-");
+  TraceApiEvent(L"RegCreateKeyA", L"create_key", KeyPathFromHandle(hKey), L"-", L"-");
   InternalDispatchGuard internalGuard;
   DWORD disp = 0;
   return Hook_RegCreateKeyExA(hKey, lpSubKey, 0, nullptr, 0, KEY_READ | KEY_WRITE, nullptr, phkResult, &disp);
@@ -48,17 +36,24 @@ LONG WINAPI Hook_RegSetKeyValueW(HKEY hKey,
     return fpRegSetKeyValueW ? fpRegSetKeyValueW(hKey, lpSubKey, lpValueName, dwType, lpData, cbData) : ERROR_CALL_NOT_IMPLEMENTED;
   }
   std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring sub = lpSubKey ? CanonicalizeSubKey(lpSubKey) : L"";
-  std::wstring full = base.empty() ? (sub.empty() ? L"(native)" : sub) : (sub.empty() ? base : JoinKeyPath(base, sub));
-  std::wstring valueName = lpValueName ? std::wstring(lpValueName) : std::wstring();
+  if (base.empty()) {
+    return fpRegSetKeyValueW ? fpRegSetKeyValueW(hKey, lpSubKey, lpValueName, dwType, lpData, cbData) : ERROR_CALL_NOT_IMPLEMENTED;
+  }
+  std::wstring subRaw;
+  if (!TryReadWideString(lpSubKey, subRaw)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring valueName;
+  if (!TryReadWideString(lpValueName, valueName)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring sub = subRaw.empty() ? L"" : CanonicalizeSubKey(subRaw);
+  std::wstring full = sub.empty() ? base : JoinKeyPath(base, sub);
   TraceApiEvent(L"RegSetKeyValueW",
                 L"set_value",
                 full,
                 valueName,
                 FormatRegType(dwType) + L":" + FormatValuePreview(dwType, reinterpret_cast<const BYTE*>(lpData), cbData));
-  if (base.empty()) {
-    return fpRegSetKeyValueW ? fpRegSetKeyValueW(hKey, lpSubKey, lpValueName, dwType, lpData, cbData) : ERROR_CALL_NOT_IMPLEMENTED;
-  }
 
   EnsureStoreOpen();
   {
@@ -81,9 +76,19 @@ LONG WINAPI Hook_RegSetKeyValueA(HKEY hKey,
     return fpRegSetKeyValueA ? fpRegSetKeyValueA(hKey, lpSubKey, lpValueName, dwType, lpData, cbData) : ERROR_CALL_NOT_IMPLEMENTED;
   }
   std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring subW = lpSubKey ? CanonicalizeSubKey(AnsiToWide(lpSubKey, -1)) : L"";
-  std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
-  std::wstring valueName = lpValueName ? AnsiToWide(lpValueName, -1) : std::wstring();
+  if (base.empty()) {
+    return fpRegSetKeyValueA ? fpRegSetKeyValueA(hKey, lpSubKey, lpValueName, dwType, lpData, cbData) : ERROR_CALL_NOT_IMPLEMENTED;
+  }
+  std::wstring subRaw;
+  if (!TryAnsiToWideString(lpSubKey, subRaw)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring valueName;
+  if (!TryAnsiToWideString(lpValueName, valueName)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring subW = subRaw.empty() ? L"" : CanonicalizeSubKey(subRaw);
+  std::wstring full = subW.empty() ? base : JoinKeyPath(base, subW);
   auto normalized = EnsureWideStringData(dwType, reinterpret_cast<const BYTE*>(lpData), cbData);
   TraceApiEvent(L"RegSetKeyValueA",
                 L"set_value",
@@ -91,10 +96,6 @@ LONG WINAPI Hook_RegSetKeyValueA(HKEY hKey,
                 valueName,
                 FormatRegType(dwType) + L":" +
                     FormatValuePreview(dwType, normalized.empty() ? nullptr : normalized.data(), (DWORD)normalized.size()));
-  if (base.empty()) {
-    return fpRegSetKeyValueA ? fpRegSetKeyValueA(hKey, lpSubKey, lpValueName, dwType, lpData, cbData) : ERROR_CALL_NOT_IMPLEMENTED;
-  }
-
   EnsureStoreOpen();
   {
     std::lock_guard<std::mutex> lock(g_storeMutex);
@@ -226,7 +227,9 @@ LONG WINAPI Hook_RegEnumValueA(HKEY hKey,
     LONG rc = fpRegEnumValueA(hKey, dwIndex, lpValueName, lpcchValueName, lpReserved, typeOut, lpData, lpcbData);
     std::wstring outName;
     if (rc == ERROR_SUCCESS && lpValueName && lpcchValueName) {
-      outName = AnsiToWide(lpValueName, (int)(*lpcchValueName));
+      if (!TryAnsiToWideString(lpValueName, outName)) {
+        outName = L"<invalid>";
+      }
     }
     DWORD cb = lpcbData ? *lpcbData : 0;
     const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
@@ -590,16 +593,20 @@ LONG WINAPI Hook_RegSetValueW(HKEY hKey, LPCWSTR lpSubKey, DWORD dwType, LPCWSTR
     return fpRegSetValueW(hKey, lpSubKey, dwType, lpData, cbData);
   }
   std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring sub = lpSubKey ? CanonicalizeSubKey(lpSubKey) : L"";
-  std::wstring full = base.empty() ? (sub.empty() ? L"(native)" : sub) : (sub.empty() ? base : JoinKeyPath(base, sub));
+  if (base.empty()) {
+    return fpRegSetValueW(hKey, lpSubKey, dwType, lpData, cbData);
+  }
+  std::wstring subRaw;
+  if (!TryReadWideString(lpSubKey, subRaw)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring sub = subRaw.empty() ? L"" : CanonicalizeSubKey(subRaw);
+  std::wstring full = sub.empty() ? base : JoinKeyPath(base, sub);
   TraceApiEvent(L"RegSetValueW",
                 L"set_value",
                 full,
                 L"(Default)",
                 FormatRegType(dwType) + L":" + FormatValuePreview(dwType, reinterpret_cast<const BYTE*>(lpData), cbData));
-  if (base.empty()) {
-    return fpRegSetValueW(hKey, lpSubKey, dwType, lpData, cbData);
-  }
   std::wstring valueName;
 
   EnsureStoreOpen();
@@ -618,8 +625,15 @@ LONG WINAPI Hook_RegSetValueA(HKEY hKey, LPCSTR lpSubKey, DWORD dwType, LPCSTR l
     return fpRegSetValueA(hKey, lpSubKey, dwType, lpData, cbData);
   }
   std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring subW = lpSubKey ? CanonicalizeSubKey(AnsiToWide(lpSubKey, -1)) : L"";
-  std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
+  if (base.empty()) {
+    return fpRegSetValueA(hKey, lpSubKey, dwType, lpData, cbData);
+  }
+  std::wstring subRaw;
+  if (!TryAnsiToWideString(lpSubKey, subRaw)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring subW = subRaw.empty() ? L"" : CanonicalizeSubKey(subRaw);
+  std::wstring full = subW.empty() ? base : JoinKeyPath(base, subW);
   auto normalized = EnsureWideStringData(dwType, reinterpret_cast<const BYTE*>(lpData), cbData);
   TraceApiEvent(L"RegSetValueA",
                 L"set_value",
@@ -627,9 +641,6 @@ LONG WINAPI Hook_RegSetValueA(HKEY hKey, LPCSTR lpSubKey, DWORD dwType, LPCSTR l
                 L"(Default)",
                 FormatRegType(dwType) + L":" +
                     FormatValuePreview(dwType, normalized.empty() ? nullptr : normalized.data(), (DWORD)normalized.size()));
-  if (base.empty()) {
-    return fpRegSetValueA(hKey, lpSubKey, dwType, lpData, cbData);
-  }
   std::wstring valueName;
 
   EnsureStoreOpen();
@@ -649,20 +660,23 @@ LONG WINAPI Hook_RegQueryValueW(HKEY hKey, LPCWSTR lpSubKey, LPWSTR lpData, PLON
     return fpRegQueryValueW(hKey, lpSubKey, lpData, lpcbData);
   }
   std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring sub = lpSubKey ? CanonicalizeSubKey(lpSubKey) : L"";
-  std::wstring full = base.empty() ? (sub.empty() ? L"(native)" : sub) : (sub.empty() ? base : JoinKeyPath(base, sub));
   if (base.empty()) {
     LONG rc = fpRegQueryValueW(hKey, lpSubKey, lpData, lpcbData);
     DWORD cb = lpcbData ? (DWORD)*lpcbData : 0;
     const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? reinterpret_cast<const BYTE*>(lpData) : nullptr;
     return TraceReadResultAndReturn(
-        L"RegQueryValueW", full, L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
+        L"RegQueryValueW", L"(native)", L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
   }
+  std::wstring subRaw;
+  if (!TryReadWideString(lpSubKey, subRaw)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring sub = subRaw.empty() ? L"" : CanonicalizeSubKey(subRaw);
+  std::wstring full = sub.empty() ? base : JoinKeyPath(base, sub);
   if (!lpcbData) {
     return TraceReadResultAndReturn(
         L"RegQueryValueW", full, L"(Default)", ERROR_INVALID_PARAMETER, true, REG_SZ, nullptr, 0, false);
   }
-  full = sub.empty() ? base : JoinKeyPath(base, sub);
   std::wstring valueName;
 
   EnsureStoreOpen();
@@ -732,20 +746,23 @@ LONG WINAPI Hook_RegQueryValueA(HKEY hKey, LPCSTR lpSubKey, LPSTR lpData, PLONG 
     return fpRegQueryValueA(hKey, lpSubKey, lpData, lpcbData);
   }
   std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring subW = lpSubKey ? CanonicalizeSubKey(AnsiToWide(lpSubKey, -1)) : L"";
-  std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
   if (base.empty()) {
     LONG rc = fpRegQueryValueA(hKey, lpSubKey, lpData, lpcbData);
     DWORD cb = lpcbData ? (DWORD)*lpcbData : 0;
     const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? reinterpret_cast<const BYTE*>(lpData) : nullptr;
     return TraceReadResultAndReturn(
-        L"RegQueryValueA", full, L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
+        L"RegQueryValueA", L"(native)", L"(Default)", rc, true, REG_SZ, outData, cb, lpData == nullptr);
   }
+  std::wstring subRaw;
+  if (!TryAnsiToWideString(lpSubKey, subRaw)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring subW = subRaw.empty() ? L"" : CanonicalizeSubKey(subRaw);
+  std::wstring full = subW.empty() ? base : JoinKeyPath(base, subW);
   if (!lpcbData) {
     return TraceReadResultAndReturn(
         L"RegQueryValueA", full, L"(Default)", ERROR_INVALID_PARAMETER, true, REG_SZ, nullptr, 0, false);
   }
-  full = subW.empty() ? base : JoinKeyPath(base, subW);
   std::wstring valueName;
 
   EnsureStoreOpen();

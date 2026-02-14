@@ -5,6 +5,7 @@
 namespace hklmwrap {
 
 bool InstallRegistryHooks();
+bool AreRegistryHooksActive();
 void RemoveRegistryHooks();
 
 }

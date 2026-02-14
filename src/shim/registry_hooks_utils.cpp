@@ -54,6 +54,30 @@ std::wstring AnsiToWide(const char* s, int len) {
   return out;
 }
 
+bool TryReadWideString(const wchar_t* s, std::wstring& out) {
+  out.clear();
+  if (!s) {
+    return true;
+  }
+  if (IsBadStringPtrW(s, 32767)) {
+    return false;
+  }
+  out.assign(s);
+  return true;
+}
+
+bool TryAnsiToWideString(const char* s, std::wstring& out) {
+  out.clear();
+  if (!s) {
+    return true;
+  }
+  if (IsBadStringPtrA(s, 32767)) {
+    return false;
+  }
+  out = AnsiToWide(s, -1);
+  return true;
+}
+
 std::wstring CaseFold(const std::wstring& s) {
   std::wstring out;
   out.resize(s.size());

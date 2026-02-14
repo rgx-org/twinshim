@@ -11,6 +11,8 @@ namespace hklmwrap {
 std::wstring CanonicalizeSubKey(const std::wstring& s);
 std::wstring JoinKeyPath(const std::wstring& base, const std::wstring& sub);
 std::wstring AnsiToWide(const char* s, int len);
+bool TryReadWideString(const wchar_t* s, std::wstring& out);
+bool TryAnsiToWideString(const char* s, std::wstring& out);
 std::wstring CaseFold(const std::wstring& s);
 std::vector<uint8_t> EnsureWideStringData(DWORD type, const BYTE* data, DWORD cbData);
 std::vector<uint8_t> WideToAnsiBytesForQuery(DWORD type, const std::vector<uint8_t>& wideBytes);

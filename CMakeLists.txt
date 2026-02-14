@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(HKLM_WRAPPER_FETCH_MINHOOK "Fetch MinHook at configure time" ON)
 option(HKLM_WRAPPER_ENABLE_TESTS "Build unit tests" ON)
+option(HKLM_WRAPPER_MSVC_STATIC_RUNTIME "Use /MT runtime for wrapper/shim on MSVC" ON)
 
 include(CTest)
 
@@ -15,6 +16,12 @@ if(NOT WIN32)
   message(STATUS "On non-Windows targets, no build targets are generated.")
   message(STATUS "If you meant to cross-compile from macOS/Linux, configure with a Windows toolchain (see README).")
 else()
+
+  if(MSVC AND HKLM_WRAPPER_MSVC_STATIC_RUNTIME)
+    # Avoid runtime collisions with app-local MSVC redistributable DLLs in
+    # injected processes by linking wrapper/shim against static runtime.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  endif()
 
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_link_options(

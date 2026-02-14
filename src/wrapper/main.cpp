@@ -510,6 +510,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   debugBridge.Stop();
   DWORD exitCode = 0;
   GetExitCodeProcess(pi.hProcess, &exitCode);
+
   std::wstringstream exitMsg;
   exitMsg << L"wrapper returning exit code " << static_cast<unsigned long>(exitCode)
           << L" (0x" << std::hex << std::uppercase << static_cast<unsigned long>(exitCode) << L")";

@@ -9,6 +9,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -32,17 +33,26 @@ struct VirtualKey {
 
 std::mutex g_virtualKeysMutex;
 std::unordered_set<VirtualKey*> g_virtualKeys;
+std::mutex g_realKeysMutex;
+std::unordered_map<HKEY, std::wstring> g_realKeys;
 
 thread_local bool g_bypass = false;
+std::atomic<bool> g_minHookInitialized{false};
+std::atomic<bool> g_hooksEnabled{false};
 
 bool ShouldInstallExtendedHooks() {
   wchar_t modeBuf[64]{};
   DWORD modeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
   if (!modeLen || modeLen >= (sizeof(modeBuf) / sizeof(modeBuf[0]))) {
-    return false;
+    // Default to full ANSI+W coverage to avoid mixed-callsite handle issues
+    // where a virtual handle created by *W is consumed by an unhooked *A API.
+    return true;
   }
   std::wstring mode(modeBuf, modeBuf + modeLen);
   std::transform(mode.begin(), mode.end(), mode.begin(), [](wchar_t ch) { return (wchar_t)std::towlower(ch); });
+  if (mode == L"core" || mode == L"minimal" || mode == L"wide" || mode == L"unicode") {
+    return false;
+  }
   return mode == L"all" || mode == L"full" || mode == L"extended";
 }
 
@@ -157,6 +167,13 @@ std::wstring KeyPathFromHandle(HKEY hKey) {
   if (auto* vk = AsVirtual(hKey)) {
     return vk->keyPath;
   }
+  {
+    std::lock_guard<std::mutex> lock(g_realKeysMutex);
+    auto it = g_realKeys.find(hKey);
+    if (it != g_realKeys.end()) {
+      return it->second;
+    }
+  }
   if (IsHKLMRoot(hKey)) {
     return L"HKLM";
   }
@@ -179,6 +196,22 @@ VirtualKey* NewVirtualKey(const std::wstring& keyPath, HKEY real) {
     g_virtualKeys.insert(vk);
   }
   return vk;
+}
+
+void RegisterRealKey(HKEY key, const std::wstring& path) {
+  if (!key || key == HKEY_LOCAL_MACHINE) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_realKeysMutex);
+  g_realKeys[key] = path;
+}
+
+void UnregisterRealKey(HKEY key) {
+  if (!key) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_realKeysMutex);
+  g_realKeys.erase(key);
 }
 
 struct MergedNames {
@@ -406,13 +439,16 @@ static bool CreateHookApiTyped(LPCWSTR moduleName, LPCSTR procName, TDetour deto
 }
 
 bool InstallRegistryHooks() {
+  g_hooksEnabled.store(false, std::memory_order_release);
   if (ShouldDisableHooks()) {
+    g_minHookInitialized.store(false, std::memory_order_release);
     return true;
   }
 
   if (MH_Initialize() != MH_OK) {
     return false;
   }
+  g_minHookInitialized.store(true, std::memory_order_release);
 
   const bool extended = ShouldInstallExtendedHooks();
 
@@ -465,14 +501,31 @@ bool InstallRegistryHooks() {
 
   if (!ok) {
     MH_Uninitialize();
+    g_minHookInitialized.store(false, std::memory_order_release);
     return false;
   }
-  return MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
+
+  if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
+    MH_Uninitialize();
+    g_minHookInitialized.store(false, std::memory_order_release);
+    return false;
+  }
+
+  g_hooksEnabled.store(true, std::memory_order_release);
+  return true;
+}
+
+bool AreRegistryHooksActive() {
+  return g_hooksEnabled.load(std::memory_order_acquire);
 }
 
 void RemoveRegistryHooks() {
-  MH_DisableHook(MH_ALL_HOOKS);
-  MH_Uninitialize();
+  if (g_hooksEnabled.exchange(false, std::memory_order_acq_rel)) {
+    MH_DisableHook(MH_ALL_HOOKS);
+  }
+  if (g_minHookInitialized.exchange(false, std::memory_order_acq_rel)) {
+    MH_Uninitialize();
+  }
   DestroyAllVirtualKeys();
 }
 

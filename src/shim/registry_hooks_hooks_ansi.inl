@@ -8,49 +8,53 @@ LONG WINAPI Hook_RegOpenKeyExA(HKEY hKey, LPCSTR lpSubKey, DWORD ulOptions, REGS
     return ERROR_INVALID_PARAMETER;
   }
   std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring subW = lpSubKey ? CanonicalizeSubKey(AnsiToWide(lpSubKey, -1)) : L"";
-  std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
-  TraceApiEvent(L"RegOpenKeyExA", L"open_key", full, L"-", L"-");
   if (base.empty()) {
     return fpRegOpenKeyExA(hKey, lpSubKey, ulOptions, samDesired, phkResult);
+  }
+
+  HKEY realParent = RealHandleForFallback(hKey);
+  HKEY realOut = nullptr;
+  LONG realRc = ERROR_INVALID_HANDLE;
+  {
+    BypassGuard guard;
+    realRc = fpRegOpenKeyExA(realParent ? realParent : hKey, lpSubKey, ulOptions, samDesired, &realOut);
+  }
+
+  std::wstring subRaw;
+  std::wstring subW;
+  std::wstring full = base;
+  if (TryAnsiToWideString(lpSubKey, subRaw)) {
+    subW = subRaw.empty() ? L"" : CanonicalizeSubKey(subRaw);
+    full = subW.empty() ? base : JoinKeyPath(base, subW);
+  }
+  TraceApiEvent(L"RegOpenKeyExA", L"open_key", full, L"-", L"-");
+
+  if (realRc == ERROR_SUCCESS && realOut) {
+    RegisterRealKey(realOut, full.empty() ? base : full);
+    *phkResult = realOut;
+    return ERROR_SUCCESS;
+  }
+
+  if (subW.empty() && !subRaw.empty()) {
+    *phkResult = nullptr;
+    return realRc;
   }
 
   EnsureStoreOpen();
   {
     std::lock_guard<std::mutex> lock(g_storeMutex);
-    if (g_store.IsKeyDeleted(full)) {
-      *phkResult = nullptr;
-      return ERROR_FILE_NOT_FOUND;
-    }
     if (g_store.KeyExistsLocally(full)) {
       *phkResult = reinterpret_cast<HKEY>(NewVirtualKey(full, nullptr));
       return ERROR_SUCCESS;
     }
+    if (g_store.IsKeyDeleted(full)) {
+      *phkResult = nullptr;
+      return ERROR_FILE_NOT_FOUND;
+    }
   }
 
-  HKEY realParent = RealHandleForFallback(hKey);
-  HKEY realOut = nullptr;
-  {
-    BypassGuard guard;
-    LONG rc = ERROR_FILE_NOT_FOUND;
-    if (realParent) {
-      rc = fpRegOpenKeyExA(realParent, lpSubKey, ulOptions, samDesired, &realOut);
-    } else {
-      std::wstring absSub;
-      if (full.rfind(L"HKLM\\", 0) == 0) {
-        absSub = full.substr(5);
-      }
-      if (!absSub.empty()) {
-        rc = fpRegOpenKeyExW(HKEY_LOCAL_MACHINE, absSub.c_str(), 0, samDesired, &realOut);
-      }
-    }
-    if (rc != ERROR_SUCCESS) {
-      *phkResult = nullptr;
-      return rc;
-    }
-  }
-  *phkResult = reinterpret_cast<HKEY>(NewVirtualKey(full, realOut));
-  return ERROR_SUCCESS;
+  *phkResult = nullptr;
+  return realRc;
 }
 
 LONG WINAPI Hook_RegCreateKeyExA(HKEY hKey,
@@ -70,13 +74,22 @@ LONG WINAPI Hook_RegCreateKeyExA(HKEY hKey,
     return ERROR_INVALID_PARAMETER;
   }
   std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring subW = lpSubKey ? CanonicalizeSubKey(AnsiToWide(lpSubKey, -1)) : L"";
-  std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
-  TraceApiEvent(L"RegCreateKeyExA", L"create_key", full, L"-", L"-");
   if (base.empty()) {
     return fpRegCreateKeyExA(
         hKey, lpSubKey, Reserved, lpClass, dwOptions, samDesired, lpSecurityAttributes, phkResult, lpdwDisposition);
   }
+  std::wstring subRaw;
+  if (!TryAnsiToWideString(lpSubKey, subRaw)) {
+    *phkResult = nullptr;
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring subW = subRaw.empty() ? L"" : CanonicalizeSubKey(subRaw);
+  if (IsHKLMRoot(hKey) && subW.empty()) {
+    return fpRegCreateKeyExA(
+        hKey, lpSubKey, Reserved, lpClass, dwOptions, samDesired, lpSecurityAttributes, phkResult, lpdwDisposition);
+  }
+  std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
+  TraceApiEvent(L"RegCreateKeyExA", L"create_key", full, L"-", L"-");
 
   EnsureStoreOpen();
   {
@@ -101,7 +114,12 @@ LONG WINAPI Hook_RegCreateKeyExA(HKEY hKey,
     }
   }
 
-  *phkResult = reinterpret_cast<HKEY>(NewVirtualKey(full, realOut));
+  if (realOut) {
+    RegisterRealKey(realOut, full);
+    *phkResult = realOut;
+  } else {
+    *phkResult = reinterpret_cast<HKEY>(NewVirtualKey(full, nullptr));
+  }
   if (lpdwDisposition) {
     *lpdwDisposition = REG_OPENED_EXISTING_KEY;
   }
@@ -118,7 +136,13 @@ LONG WINAPI Hook_RegSetValueExA(HKEY hKey,
     return fpRegSetValueExA(hKey, lpValueName, Reserved, dwType, lpData, cbData);
   }
   std::wstring keyPath = KeyPathFromHandle(hKey);
-  std::wstring valueName = lpValueName ? AnsiToWide(lpValueName, -1) : std::wstring();
+  if (keyPath.empty()) {
+    return fpRegSetValueExA(hKey, lpValueName, Reserved, dwType, lpData, cbData);
+  }
+  std::wstring valueName;
+  if (!TryAnsiToWideString(lpValueName, valueName)) {
+    return ERROR_INVALID_PARAMETER;
+  }
   auto normalized = EnsureWideStringData(dwType, lpData, cbData);
   TraceApiEvent(L"RegSetValueExA",
                 L"set_value",
@@ -126,10 +150,6 @@ LONG WINAPI Hook_RegSetValueExA(HKEY hKey,
                 valueName,
                 FormatRegType(dwType) + L":" +
                     FormatValuePreview(dwType, normalized.empty() ? nullptr : normalized.data(), (DWORD)normalized.size()));
-  if (keyPath.empty()) {
-    return fpRegSetValueExA(hKey, lpValueName, Reserved, dwType, lpData, cbData);
-  }
-
   EnsureStoreOpen();
   {
     std::lock_guard<std::mutex> lock(g_storeMutex);
@@ -154,7 +174,7 @@ LONG WINAPI Hook_RegQueryValueExA(HKEY hKey,
     return fpRegQueryValueExA(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
   }
   std::wstring keyPath = KeyPathFromHandle(hKey);
-  std::wstring valueName = lpValueName ? AnsiToWide(lpValueName, -1) : std::wstring();
+  std::wstring valueName;
   if (keyPath.empty()) {
     DWORD typeLocal = 0;
     LPDWORD typeOut = lpType ? lpType : &typeLocal;
@@ -163,6 +183,9 @@ LONG WINAPI Hook_RegQueryValueExA(HKEY hKey,
     const BYTE* outData = (rc == ERROR_SUCCESS && lpData && lpcbData) ? lpData : nullptr;
     return TraceReadResultAndReturn(
         L"RegQueryValueExA", keyPath, valueName, rc, true, *typeOut, outData, cb, lpData == nullptr);
+  }
+  if (!TryAnsiToWideString(lpValueName, valueName)) {
+    return ERROR_INVALID_PARAMETER;
   }
 
   EnsureStoreOpen();
@@ -240,11 +263,14 @@ LONG WINAPI Hook_RegDeleteValueA(HKEY hKey, LPCSTR lpValueName) {
     return fpRegDeleteValueA(hKey, lpValueName);
   }
   std::wstring keyPath = KeyPathFromHandle(hKey);
-  std::wstring valueName = lpValueName ? AnsiToWide(lpValueName, -1) : std::wstring();
-  TraceApiEvent(L"RegDeleteValueA", L"delete_value", keyPath, valueName, L"-");
   if (keyPath.empty()) {
     return fpRegDeleteValueA(hKey, lpValueName);
   }
+  std::wstring valueName;
+  if (!TryAnsiToWideString(lpValueName, valueName)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  TraceApiEvent(L"RegDeleteValueA", L"delete_value", keyPath, valueName, L"-");
   EnsureStoreOpen();
   {
     std::lock_guard<std::mutex> lock(g_storeMutex);
@@ -260,16 +286,19 @@ LONG WINAPI Hook_RegDeleteKeyA(HKEY hKey, LPCSTR lpSubKey) {
     return fpRegDeleteKeyA(hKey, lpSubKey);
   }
   std::wstring base = KeyPathFromHandle(hKey);
-  std::wstring subW = lpSubKey ? CanonicalizeSubKey(AnsiToWide(lpSubKey, -1)) : L"";
-  std::wstring full = base.empty() ? (subW.empty() ? L"(native)" : subW) : (subW.empty() ? base : JoinKeyPath(base, subW));
-  TraceApiEvent(L"RegDeleteKeyA", L"delete_key", full, L"-", L"-");
   if (base.empty()) {
     return fpRegDeleteKeyA(hKey, lpSubKey);
   }
+  std::wstring subRaw;
+  if (!TryAnsiToWideString(lpSubKey, subRaw)) {
+    return ERROR_INVALID_PARAMETER;
+  }
+  std::wstring subW = subRaw.empty() ? L"" : CanonicalizeSubKey(subRaw);
+  std::wstring full = subW.empty() ? base : JoinKeyPath(base, subW);
+  TraceApiEvent(L"RegDeleteKeyA", L"delete_key", full, L"-", L"-");
   if (subW.empty()) {
     return ERROR_INVALID_PARAMETER;
   }
-  full = JoinKeyPath(base, subW);
   EnsureStoreOpen();
   {
     std::lock_guard<std::mutex> lock(g_storeMutex);

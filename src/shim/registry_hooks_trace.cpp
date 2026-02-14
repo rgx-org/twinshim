@@ -9,6 +9,8 @@
 namespace hklmwrap {
 namespace {
 
+constexpr DWORD kMaxTraceDataBytes = 1024;
+
 std::once_flag g_debugInitOnce;
 bool g_debugAll = false;
 std::vector<std::wstring> g_debugTokens;
@@ -159,6 +161,21 @@ std::wstring HexPreview(const BYTE* data, DWORD cbData, size_t maxBytes = 24) {
   return out;
 }
 
+std::wstring HexEncodeAll(const BYTE* data, DWORD cbData) {
+  if (!data || cbData == 0) {
+    return L"<empty>";
+  }
+  static const wchar_t* kHex = L"0123456789ABCDEF";
+  std::wstring out;
+  out.reserve((size_t)cbData * 2);
+  for (DWORD i = 0; i < cbData; i++) {
+    BYTE b = data[i];
+    out.push_back(kHex[(b >> 4) & 0xF]);
+    out.push_back(kHex[b & 0xF]);
+  }
+  return out;
+}
+
 std::string WideToUtf8(const std::wstring& text) {
   if (text.empty()) {
     return {};
@@ -269,6 +286,65 @@ std::wstring FormatValuePreview(DWORD type, const BYTE* data, DWORD cbData) {
   return L"hex:" + HexPreview(data, cbData);
 }
 
+std::wstring FormatValueForTrace(bool typeKnown, DWORD type, const BYTE* data, DWORD cbData) {
+  if (!data || cbData == 0) {
+    return L"<empty>";
+  }
+
+  if (!typeKnown) {
+    return L"hex:" + HexEncodeAll(data, cbData);
+  }
+
+  if (type == REG_DWORD && cbData >= sizeof(uint32_t)) {
+    uint32_t value = 0;
+    std::memcpy(&value, data, sizeof(value));
+    return L"dword:" + std::to_wstring(value);
+  }
+  if (type == REG_QWORD && cbData >= sizeof(uint64_t)) {
+    uint64_t value = 0;
+    std::memcpy(&value, data, sizeof(value));
+    return L"qword:" + std::to_wstring(value);
+  }
+
+  if (type == REG_SZ || type == REG_EXPAND_SZ) {
+    const wchar_t* w = reinterpret_cast<const wchar_t*>(data);
+    size_t chars = cbData / sizeof(wchar_t);
+    size_t end = 0;
+    while (end < chars && w[end] != L'\0') {
+      end++;
+    }
+    std::wstring text(w, w + end);
+    return L"str:\"" + SanitizeForLog(text, 512) + L"\"";
+  }
+
+  if (type == REG_MULTI_SZ) {
+    const wchar_t* w = reinterpret_cast<const wchar_t*>(data);
+    size_t chars = cbData / sizeof(wchar_t);
+    size_t i = 0;
+    std::wstring joined;
+    while (i < chars) {
+      size_t start = i;
+      while (i < chars && w[i] != L'\0') {
+        i++;
+      }
+      if (i == start) {
+        break;
+      }
+      if (!joined.empty()) {
+        joined += L"|";
+      }
+      joined += SanitizeForLog(std::wstring(w + start, w + i), 256);
+      i++;
+    }
+    if (joined.empty()) {
+      joined = L"<empty>";
+    }
+    return L"multi:\"" + joined + L"\"";
+  }
+
+  return L"hex:" + HexEncodeAll(data, cbData);
+}
+
 void TraceApiEvent(const wchar_t* apiName,
                    const wchar_t* opType,
                    const std::wstring& keyPath,
@@ -320,7 +396,11 @@ LONG TraceReadResultAndReturn(const wchar_t* apiName,
 
   if (status == ERROR_SUCCESS) {
     if (data && cbData) {
-      value += L" " + FormatValuePreview(typeKnown ? type : REG_BINARY, data, cbData);
+      if (cbData <= kMaxTraceDataBytes) {
+        value += L" data=" + FormatValueForTrace(typeKnown, type, data, cbData);
+      } else {
+        value += L" <data_present>";
+      }
     } else if (sizeOnly) {
       value += L" <size_only>";
     }
@@ -351,7 +431,11 @@ LONG TraceEnumReadResultAndReturn(const wchar_t* apiName,
 
   if (status == ERROR_SUCCESS) {
     if (data && cbData) {
-      detail += L" " + FormatValuePreview(typeKnown ? type : REG_BINARY, data, cbData);
+      if (cbData <= kMaxTraceDataBytes) {
+        detail += L" data=" + FormatValueForTrace(typeKnown, type, data, cbData);
+      } else {
+        detail += L" <data_present>";
+      }
     } else if (sizeOnly) {
       detail += L" <size_only>";
     }
