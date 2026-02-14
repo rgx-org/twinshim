@@ -61,6 +61,10 @@ bool LocalRegistryStore::Open(const std::wstring& dbPath) {
 
 void LocalRegistryStore::Close() {
   if (db_) {
+    // The store uses WAL mode for better concurrent read/write behavior.
+    // Best-effort checkpoint on clean shutdown so changes are merged back into
+    // the main DB file and the -wal sidecar can be truncated.
+    (void)sqlite3_wal_checkpoint_v2(db_, nullptr, SQLITE_CHECKPOINT_TRUNCATE, nullptr, nullptr);
     sqlite3_close(db_);
     db_ = nullptr;
   }

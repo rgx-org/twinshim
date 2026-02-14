@@ -50,6 +50,13 @@ static void TraceLine(const std::wstring& message, bool enabled) {
 #endif
 }
 
+static std::wstring MakeHookReadyEventName() {
+  std::wstringstream ss;
+  ss << L"Local\\hklm_wrapper_hook_ready_" << static_cast<unsigned long>(GetCurrentProcessId())
+     << L"_" << static_cast<unsigned long long>(GetTickCount64());
+  return ss.str();
+}
+
 static bool TryQueryWow64(HANDLE process, BOOL* isWow64) {
   if (!isWow64) {
     return false;
@@ -394,12 +401,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   SetEnvironmentVariableW(L"HKLM_WRAPPER_DB_PATH", dbPath.c_str());
 
   DebugPipeBridge debugBridge;
+  HANDLE hookReadyEvent = nullptr;
   if (!debugApisCsv.empty()) {
     if (!EnsureStdoutBoundToConsole()) {
       ShowError(L"Failed to bind stdout to console for --debug mode.");
       return 4;
     }
     TraceLine(L"debug mode enabled", traceEnabled);
+
+    // Create a named event that the injected shim will signal when hook
+    // installation finishes. This avoids races where the target runs/exits
+    // before hooks are active (especially in fast workflow tests).
+    const std::wstring hookReadyEventName = MakeHookReadyEventName();
+    hookReadyEvent = CreateEventW(nullptr, TRUE, FALSE, hookReadyEventName.c_str());
+    if (hookReadyEvent) {
+      SetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_READY_EVENT", hookReadyEventName.c_str());
+    }
+
     if (!debugBridge.Start()) {
       std::wstring msg = L"Failed to create debug pipe: " + FormatWin32Error(GetLastError());
       ShowError(msg);
@@ -477,6 +495,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
   TraceLine(L"shim injected successfully", traceEnabled);
 
+  if (hookReadyEvent) {
+    TraceLine(L"waiting for shim hook-ready signal", traceEnabled);
+    DWORD waitRc = WaitForSingleObject(hookReadyEvent, 2000);
+    if (waitRc == WAIT_OBJECT_0) {
+      TraceLine(L"shim hook-ready signaled", traceEnabled);
+    } else if (waitRc == WAIT_TIMEOUT) {
+      TraceLine(L"timed out waiting for shim hook-ready signal", traceEnabled);
+    } else {
+      TraceLine(L"failed waiting for shim hook-ready signal: " + FormatWin32Error(GetLastError()), traceEnabled);
+    }
+  }
+
   HANDLE debugJob = nullptr;
   bool trackWithDebugJob = false;
   bool waitedForJob = false;
@@ -516,5 +546,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
           << L" (0x" << std::hex << std::uppercase << static_cast<unsigned long>(exitCode) << L")";
   TraceLine(exitMsg.str(), traceEnabled);
   CloseHandle(pi.hProcess);
+  if (hookReadyEvent) {
+    CloseHandle(hookReadyEvent);
+    hookReadyEvent = nullptr;
+    // Best-effort cleanup of the coordination env var in the wrapper process.
+    // (Child already inherited its copy at CreateProcess time.)
+    SetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_READY_EVENT", nullptr);
+  }
   return (int)exitCode;
 }

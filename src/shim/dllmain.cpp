@@ -4,6 +4,23 @@
 
 namespace {
 
+void SignalHookReadyEvent() {
+  wchar_t nameBuf[512]{};
+  DWORD nameLen = GetEnvironmentVariableW(
+      L"HKLM_WRAPPER_HOOK_READY_EVENT", nameBuf, (DWORD)(sizeof(nameBuf) / sizeof(nameBuf[0])));
+  if (!nameLen || nameLen >= (sizeof(nameBuf) / sizeof(nameBuf[0]))) {
+    return;
+  }
+  nameBuf[nameLen] = L'\0';
+
+  HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, nameBuf);
+  if (!ev) {
+    return;
+  }
+  SetEvent(ev);
+  CloseHandle(ev);
+}
+
 void ShimTrace(const char* text) {
   if (!text || !*text) {
     return;
@@ -36,12 +53,15 @@ DWORD WINAPI HookInitThreadProc(LPVOID) {
   if (!installed) {
     InterlockedExchange(&g_hooksInstalled, -1);
     ShimTrace("[shim] hook install failed\n");
+    SignalHookReadyEvent();
   } else if (hklmwrap::AreRegistryHooksActive()) {
     InterlockedExchange(&g_hooksInstalled, 1);
     ShimTrace("[shim] hook install succeeded\n");
+    SignalHookReadyEvent();
   } else {
     InterlockedExchange(&g_hooksInstalled, 0);
     ShimTrace("[shim] hooks disabled by mode\n");
+    SignalHookReadyEvent();
   }
   return 0;
 }
