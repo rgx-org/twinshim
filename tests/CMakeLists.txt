@@ -71,8 +71,10 @@ endif()
 if(NOT _sqlite_target STREQUAL "")
   add_executable(hklm_store_tests
     test_local_registry_store.cpp
+    test_reg_file_import_export.cpp
     ../src/common/local_registry_store.cpp
     ../src/common/utf8.cpp
+    ../src/hklmreg/reg_file.cpp
   )
 
   hklm_wrapper_apply_test_tmp_base(hklm_store_tests)

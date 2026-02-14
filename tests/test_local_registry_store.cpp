@@ -96,14 +96,14 @@ TEST_CASE("LocalRegistryStore export includes keys with no values", "[store]") {
   const std::wstring dbPath = MakeTempDbPath();
   REQUIRE(store.Open(dbPath));
 
-  const std::wstring baseKey = L"HKLM\\SOFTWARE\\RuneBreakers";
-  const std::wstring emptyA = baseKey + L"\\Ragnarok";
-  const std::wstring emptyB = baseKey + L"\\RenewSetup";
+  const std::wstring baseKey = L"HKLM\\SOFTWARE\\ExampleVendor\\ExampleApp";
+  const std::wstring emptyA = baseKey + L"\\EmptyA";
+  const std::wstring emptyB = baseKey + L"\\EmptyB";
 
   REQUIRE(store.PutKey(emptyA));
   REQUIRE(store.PutKey(emptyB));
 
-  const std::wstring valueName = L"InstallPath";
+  const std::wstring valueName = L"InstallDir";
   const std::vector<uint8_t> payload = {0x41, 0x42, 0x43};
   REQUIRE(store.PutValue(baseKey, valueName, REG_BINARY, payload.data(), static_cast<uint32_t>(payload.size())));
 
