@@ -27,7 +27,7 @@ using hklmwrap::regfile::ParseData;
 using hklmwrap::regfile::ParseType;
 
 static void PrintUsage() {
-  std::wcerr << L"hklmreg --db <path> <add|delete|export|import|dump> [options]\n"
+  std::wcerr << L"hklmreg [--db <path>] <add|delete|export|import|dump> [options]\n"
                 L"\n"
                 L"Commands (REG-like subset):\n"
                 L"  add    <KeyName> /v <ValueName> [/t <Type>] /d <Data> [/f]\n"
@@ -35,6 +35,8 @@ static void PrintUsage() {
                 L"  export <FileName> [<KeyNamePrefix>]\n"
                 L"  dump   [<KeyNamePrefix>]\n"
                 L"  import <FileName>\n"
+                L"\n"
+                L"Default DB: .\\HKLM.sqlite (current directory)\n"
                 L"\n"
                 L"KeyName examples: HKLM\\Software\\MyApp or HKEY_LOCAL_MACHINE\\Software\\MyApp\n"
                 L"Type: REG_SZ | REG_DWORD | REG_QWORD | REG_BINARY (default: REG_SZ)\n";
@@ -79,18 +81,21 @@ static bool StdoutIsConsole() {
 #endif
 
 int wmain(int argc, wchar_t** argv) {
-  if (argc < 4) {
+  if (argc < 2) {
     PrintUsage();
     return 2;
   }
-  std::wstring dbPath;
+
+  std::wstring dbPath = L"HKLM.sqlite";
   int i = 1;
-  if (std::wstring(argv[i]) == L"--db" && i + 1 < argc) {
+  if (std::wstring(argv[i]) == L"--db") {
+    if (i + 1 >= argc) {
+      std::wcerr << L"Missing value for --db\n";
+      PrintUsage();
+      return 2;
+    }
     dbPath = argv[i + 1];
     i += 2;
-  } else {
-    PrintUsage();
-    return 2;
   }
 
   if (i >= argc) {

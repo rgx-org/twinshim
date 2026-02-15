@@ -106,16 +106,18 @@ static const wchar_t* GetWrapperExeNameForUsage() {
 static std::wstring BuildUsageMessage() {
   const std::wstring exe = GetWrapperExeNameForUsage();
   return L"Usage:\n"
-         L"  " + exe + L" [--debug <api1,api2,...|all>] <target_exe> [target arguments...]\n\n"
+         L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] <target_exe> [target arguments...]\n\n"
          L"Examples:\n"
          L"  " + exe + L" C:\\Apps\\TargetApp.exe\n"
+         L"  " + exe + L" --db .\\HKLM.sqlite C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" --debug RegOpenKey,RegQueryValue C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" C:\\Apps\\TargetApp.exe --mode test --config \"C:\\path with spaces\\cfg.json\"";
 }
 
 static int ParseLaunchArguments(std::wstring& targetExe,
                                 std::vector<std::wstring>& forwardedArgs,
-                                std::wstring& debugApisCsv) {
+                                std::wstring& debugApisCsv,
+                                std::wstring& dbPathArg) {
   const std::vector<std::wstring> rawArgs = GetRawArgs();
   if (rawArgs.empty()) {
     ShowError(BuildUsageMessage());
@@ -138,6 +140,15 @@ static int ParseLaunchArguments(std::wstring& targetExe,
       i += 2;
       continue;
     }
+    if (rawArgs[i] == L"--db") {
+      if (i + 1 >= rawArgs.size()) {
+        ShowError(L"Missing value for --db.");
+        return 1;
+      }
+      dbPathArg = rawArgs[i + 1];
+      i += 2;
+      continue;
+    }
     break;
   }
 
@@ -149,6 +160,44 @@ static int ParseLaunchArguments(std::wstring& targetExe,
   targetExe = rawArgs[i];
   forwardedArgs.assign(rawArgs.begin() + i + 1, rawArgs.end());
   return -1;
+}
+
+static std::wstring GetCurrentDirectoryPath() {
+  DWORD required = GetCurrentDirectoryW(0, nullptr);
+  if (required == 0) {
+    return {};
+  }
+  std::wstring dir;
+  dir.resize(required - 1);
+  DWORD got = GetCurrentDirectoryW(required, dir.data());
+  if (got == 0 || got >= required) {
+    return {};
+  }
+  dir.resize(got);
+  return dir;
+}
+
+static bool IsAbsolutePath(const std::wstring& path) {
+  if (path.size() >= 2 && path[0] == L'\\' && path[1] == L'\\') {
+    return true; // UNC
+  }
+  if (path.size() >= 2 && std::iswalpha(path[0]) && path[1] == L':') {
+    return true; // Drive letter
+  }
+  if (!path.empty() && (path[0] == L'\\' || path[0] == L'/')) {
+    return true; // Rooted
+  }
+  return false;
+}
+
+static std::wstring ResolveDbPath(const std::wstring& rawDbPath, const std::wstring& cwd) {
+  if (rawDbPath.empty()) {
+    return CombinePath(cwd, L"HKLM.sqlite");
+  }
+  if (IsAbsolutePath(rawDbPath)) {
+    return NormalizeSlashes(rawDbPath);
+  }
+  return CombinePath(cwd, rawDbPath);
 }
 
 static bool EnsureStdoutBoundToConsole() {
@@ -386,7 +435,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   std::wstring targetExe;
   std::vector<std::wstring> args;
   std::wstring debugApisCsv;
-  int parseResult = ParseLaunchArguments(targetExe, args, debugApisCsv);
+  std::wstring dbPathArg;
+  int parseResult = ParseLaunchArguments(targetExe, args, debugApisCsv, dbPathArg);
   if (parseResult >= 0) {
     return parseResult;
   }
@@ -394,8 +444,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   const bool traceEnabled = !debugApisCsv.empty();
 
   const std::wstring wrapperDir = GetDirectoryName(GetModulePath());
-  const std::wstring targetStem = GetFileStem(targetExe);
-  const std::wstring dbPath = CombinePath(wrapperDir, targetStem + L"-HKLM.sqlite");
+  const std::wstring cwd = GetCurrentDirectoryPath();
+  const std::wstring dbPath = ResolveDbPath(dbPathArg, cwd);
 
   const std::wstring shimPath = CombinePath(wrapperDir, HKLM_WRAPPER_SHIM_DLL_NAME);
   SetEnvironmentVariableW(L"HKLM_WRAPPER_DB_PATH", dbPath.c_str());

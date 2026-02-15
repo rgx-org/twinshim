@@ -99,19 +99,13 @@ void EnsureStoreOpen() {
     wchar_t dbPath[4096];
     DWORD n = GetEnvironmentVariableW(L"HKLM_WRAPPER_DB_PATH", dbPath, (DWORD)(sizeof(dbPath) / sizeof(dbPath[0])));
     if (!n || n >= (sizeof(dbPath) / sizeof(dbPath[0]))) {
-      // Fallback: next to the target EXE.
-      std::wstring exePath;
-      exePath.resize(32768);
-      DWORD got = GetModuleFileNameW(nullptr, exePath.data(), (DWORD)exePath.size());
-      if (got) {
-        exePath.resize(got);
-      } else {
-        exePath.clear();
-      }
-      std::wstring dir = GetDirectoryName(exePath);
-      std::wstring stem = GetFileStem(exePath);
-      std::wstring fallback = CombinePath(dir, stem + L"-HKLM.sqlite");
-      g_store.Open(fallback);
+      // Fallback: HKLM.sqlite in the current working directory.
+      wchar_t cwdBuf[4096]{};
+      DWORD cwdLen = GetCurrentDirectoryW((DWORD)(sizeof(cwdBuf) / sizeof(cwdBuf[0])), cwdBuf);
+      const std::wstring cwd = (cwdLen && cwdLen < (sizeof(cwdBuf) / sizeof(cwdBuf[0])))
+                                  ? std::wstring(cwdBuf, cwdBuf + cwdLen)
+                                  : std::wstring();
+      g_store.Open(CombinePath(cwd, L"HKLM.sqlite"));
       return;
     }
     g_store.Open(std::wstring(dbPath, dbPath + n));

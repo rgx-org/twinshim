@@ -76,9 +76,23 @@ bool LocalRegistryStore::Open(const std::wstring& dbPath) {
     return false;
   }
 
+  // Support concurrent wrapper + hklmreg access (WAL allows readers during writes,
+  // but writers can contend). Give operations a chance to wait instead of
+  // immediately failing with SQLITE_BUSY.
+  (void)sqlite3_busy_timeout(db_, 5000);
+
+  // Enable extended result codes so callers can distinguish SQLITE_BUSY variants
+  // when debugging. (We still treat them as failure in this layer.)
+  (void)sqlite3_extended_result_codes(db_, 1);
+
   Exec("PRAGMA journal_mode=WAL;");
   Exec("PRAGMA synchronous=NORMAL;");
   Exec("PRAGMA foreign_keys=ON;");
+
+  // Keep WAL sidecars from growing without bound in long-running sessions.
+  // This doesn't affect visibility (readers can always see committed WAL pages),
+  // but improves steady-state behavior.
+  (void)sqlite3_wal_autocheckpoint(db_, 256);
   return EnsureSchema();
 }
 
@@ -87,6 +101,10 @@ void LocalRegistryStore::Close() {
     // The store uses WAL mode for better concurrent read/write behavior.
     // Best-effort checkpoint on clean shutdown so changes are merged back into
     // the main DB file and the -wal sidecar can be truncated.
+    //
+    // Don't allow a busy handler to stall shutdown if another process is actively
+    // reading/writing.
+    (void)sqlite3_busy_timeout(db_, 0);
     (void)sqlite3_wal_checkpoint_v2(db_, nullptr, SQLITE_CHECKPOINT_TRUNCATE, nullptr, nullptr);
     sqlite3_close(db_);
     db_ = nullptr;

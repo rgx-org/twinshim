@@ -217,7 +217,7 @@ TEST_CASE("wrapper debug mode covers injected hook and store data flow", "[shim]
 
   const std::filesystem::path isolatedWrapperPath = isolatedDir / wrapperPath.filename();
   const std::filesystem::path isolatedProbePath = isolatedDir / probePath.filename();
-  const std::filesystem::path dbPath = isolatedDir / "hklm_workflow_probe-HKLM.sqlite";
+  const std::filesystem::path dbPath = isolatedDir / "HKLM.sqlite";
 
   std::error_code removeEc;
   std::filesystem::remove(dbPath, removeEc);
