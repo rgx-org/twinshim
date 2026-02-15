@@ -11,9 +11,11 @@
 
 #include <atomic>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <cwctype>
+#include <algorithm>
 #include <mutex>
 #include <string>
 
@@ -33,6 +35,10 @@ static std::atomic<bool> g_seenDDraw{false};
   static std::atomic<uint32_t> g_flipCalls{0};
   static std::atomic<uint32_t> g_bltCalls{0};
   static std::atomic<uint32_t> g_bltFastCalls{0};
+  static std::atomic<bool> g_loggedScaleViaFlip{false};
+  static std::atomic<bool> g_loggedScaleViaBlt{false};
+  static std::atomic<bool> g_loggedFilteredFallback{false};
+  static std::atomic<bool> g_loggedLockScale{false};
 
 static std::mutex g_stateMutex;
 static HWND g_hwnd = nullptr;
@@ -159,6 +165,31 @@ static bool GetClientSize(HWND hwnd, int* outW, int* outH) {
   return true;
 }
 
+static bool GetClientRectInScreen(HWND hwnd, RECT* outRc) {
+  if (!outRc) {
+    return false;
+  }
+  *outRc = RECT{};
+  if (!hwnd) {
+    return false;
+  }
+  RECT rc{};
+  if (!GetClientRect(hwnd, &rc)) {
+    return false;
+  }
+  POINT pt{rc.left, rc.top};
+  if (!ClientToScreen(hwnd, &pt)) {
+    return false;
+  }
+  const int w = (int)(rc.right - rc.left);
+  const int h = (int)(rc.bottom - rc.top);
+  outRc->left = pt.x;
+  outRc->top = pt.y;
+  outRc->right = pt.x + w;
+  outRc->bottom = pt.y + h;
+  return w > 0 && h > 0;
+}
+
 static bool SetWindowClientSize(HWND hwnd, int clientW, int clientH) {
   if (!hwnd || clientW <= 0 || clientH <= 0) {
     return false;
@@ -176,6 +207,328 @@ static bool SetWindowClientSize(HWND hwnd, int clientW, int clientH) {
 
 static bool IsFullscreenCoopFlags(DWORD flags) {
   return (flags & DDSCL_FULLSCREEN) != 0 || (flags & DDSCL_EXCLUSIVE) != 0;
+}
+
+static RECT MakeRectFromXYWH(int x, int y, int w, int h) {
+  RECT rc{};
+  rc.left = x;
+  rc.top = y;
+  rc.right = x + w;
+  rc.bottom = y + h;
+  return rc;
+}
+
+static bool RectIsOriginSize(const RECT* rc, LONG w, LONG h) {
+  if (!rc) {
+    return true;
+  }
+  return rc->left == 0 && rc->top == 0 && (rc->right - rc->left) == w && (rc->bottom - rc->top) == h;
+}
+
+static void TraceRectInline(const char* label, const RECT* rc) {
+  if (!label) {
+    label = "rc";
+  }
+  if (!rc) {
+    Tracef("%s=<null>", label);
+    return;
+  }
+  Tracef("%s=[%ld,%ld,%ld,%ld] (w=%ld h=%ld)",
+         label,
+         (long)rc->left,
+         (long)rc->top,
+         (long)rc->right,
+         (long)rc->bottom,
+         (long)(rc->right - rc->left),
+         (long)(rc->bottom - rc->top));
+}
+
+struct PixelFormatInfo {
+  uint32_t rMask = 0;
+  uint32_t gMask = 0;
+  uint32_t bMask = 0;
+  uint32_t aMask = 0;
+  int rShift = 0;
+  int gShift = 0;
+  int bShift = 0;
+  int aShift = 0;
+  int rBits = 0;
+  int gBits = 0;
+  int bBits = 0;
+  int aBits = 0;
+  int bytesPerPixel = 0;
+};
+
+static int CountBits(uint32_t v) {
+  int c = 0;
+  while (v) {
+    c += (int)(v & 1u);
+    v >>= 1;
+  }
+  return c;
+}
+
+static int CountTrailingZeros(uint32_t v) {
+  if (v == 0) {
+    return 0;
+  }
+  int c = 0;
+  while ((v & 1u) == 0) {
+    c++;
+    v >>= 1;
+  }
+  return c;
+}
+
+static bool GetPixelFormatInfoFromSurface(LPDIRECTDRAWSURFACE7 surf, PixelFormatInfo* out) {
+  if (!surf || !out) {
+    return false;
+  }
+  DDSURFACEDESC2 sd{};
+  sd.dwSize = sizeof(sd);
+  if (FAILED(surf->GetSurfaceDesc(&sd))) {
+    return false;
+  }
+  if ((sd.ddpfPixelFormat.dwFlags & DDPF_RGB) == 0) {
+    return false;
+  }
+
+  PixelFormatInfo info;
+  info.rMask = sd.ddpfPixelFormat.dwRBitMask;
+  info.gMask = sd.ddpfPixelFormat.dwGBitMask;
+  info.bMask = sd.ddpfPixelFormat.dwBBitMask;
+  info.aMask = (sd.ddpfPixelFormat.dwFlags & DDPF_ALPHAPIXELS) ? sd.ddpfPixelFormat.dwRGBAlphaBitMask : 0;
+  info.rShift = CountTrailingZeros(info.rMask);
+  info.gShift = CountTrailingZeros(info.gMask);
+  info.bShift = CountTrailingZeros(info.bMask);
+  info.aShift = CountTrailingZeros(info.aMask);
+  info.rBits = CountBits(info.rMask);
+  info.gBits = CountBits(info.gMask);
+  info.bBits = CountBits(info.bMask);
+  info.aBits = CountBits(info.aMask);
+
+  const uint32_t bpp = sd.ddpfPixelFormat.dwRGBBitCount;
+  if (bpp == 16) {
+    info.bytesPerPixel = 2;
+  } else if (bpp == 32) {
+    info.bytesPerPixel = 4;
+  } else {
+    return false;
+  }
+
+  *out = info;
+  return true;
+}
+
+static uint8_t ExpandTo8(uint32_t v, int bits) {
+  if (bits <= 0) {
+    return 0;
+  }
+  if (bits >= 8) {
+    return (uint8_t)std::min<uint32_t>(255u, v);
+  }
+  const uint32_t maxv = (1u << (uint32_t)bits) - 1u;
+  return (uint8_t)((v * 255u + (maxv / 2u)) / maxv);
+}
+
+static uint32_t CompressFrom8(uint8_t v, int bits) {
+  if (bits <= 0) {
+    return 0;
+  }
+  if (bits >= 8) {
+    return (uint32_t)v;
+  }
+  const uint32_t maxv = (1u << (uint32_t)bits) - 1u;
+  return (uint32_t)((uint32_t)v * maxv + 127u) / 255u;
+}
+
+static void UnpackRGBA(const PixelFormatInfo& fmt, uint32_t px, uint8_t* r, uint8_t* g, uint8_t* b, uint8_t* a) {
+  const uint32_t rv = (fmt.rMask ? ((px & fmt.rMask) >> (uint32_t)fmt.rShift) : 0);
+  const uint32_t gv = (fmt.gMask ? ((px & fmt.gMask) >> (uint32_t)fmt.gShift) : 0);
+  const uint32_t bv = (fmt.bMask ? ((px & fmt.bMask) >> (uint32_t)fmt.bShift) : 0);
+  const uint32_t av = (fmt.aMask ? ((px & fmt.aMask) >> (uint32_t)fmt.aShift) : 255u);
+  if (r) {
+    *r = ExpandTo8(rv, fmt.rBits);
+  }
+  if (g) {
+    *g = ExpandTo8(gv, fmt.gBits);
+  }
+  if (b) {
+    *b = ExpandTo8(bv, fmt.bBits);
+  }
+  if (a) {
+    *a = fmt.aMask ? ExpandTo8(av, fmt.aBits) : 255;
+  }
+}
+
+static uint32_t PackRGBA(const PixelFormatInfo& fmt, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+  uint32_t out = 0;
+  out |= (CompressFrom8(r, fmt.rBits) << (uint32_t)fmt.rShift) & fmt.rMask;
+  out |= (CompressFrom8(g, fmt.gBits) << (uint32_t)fmt.gShift) & fmt.gMask;
+  out |= (CompressFrom8(b, fmt.bBits) << (uint32_t)fmt.bShift) & fmt.bMask;
+  if (fmt.aMask) {
+    out |= (CompressFrom8(a, fmt.aBits) << (uint32_t)fmt.aShift) & fmt.aMask;
+  }
+  return out;
+}
+
+static uint32_t ReadPixel(const uint8_t* base, int pitch, int x, int y, int bpp) {
+  const uint8_t* p = base + (ptrdiff_t)y * pitch + (ptrdiff_t)x * bpp;
+  if (bpp == 4) {
+    return *(const uint32_t*)p;
+  }
+  return (uint32_t)(*(const uint16_t*)p);
+}
+
+static void WritePixel(uint8_t* base, int pitch, int x, int y, int bpp, uint32_t px) {
+  uint8_t* p = base + (ptrdiff_t)y * pitch + (ptrdiff_t)x * bpp;
+  if (bpp == 4) {
+    *(uint32_t*)p = px;
+  } else {
+    *(uint16_t*)p = (uint16_t)px;
+  }
+}
+
+static HRESULT TryScaleViaLockBilinear(LPDIRECTDRAWSURFACE7 dstSurf,
+                                      const RECT& dstRc,
+                                      LPDIRECTDRAWSURFACE7 srcSurf,
+                                      const RECT& srcRc) {
+  if (!dstSurf || !srcSurf) {
+    return E_INVALIDARG;
+  }
+  // Clamp destination to the primary surface bounds (window can be partially off-screen).
+  DDSURFACEDESC2 dBounds{};
+  dBounds.dwSize = sizeof(dBounds);
+  if (FAILED(dstSurf->GetSurfaceDesc(&dBounds)) || dBounds.dwWidth == 0 || dBounds.dwHeight == 0) {
+    return E_FAIL;
+  }
+  RECT clampedDst = dstRc;
+  clampedDst.left = std::max<LONG>(0, clampedDst.left);
+  clampedDst.top = std::max<LONG>(0, clampedDst.top);
+  clampedDst.right = std::min<LONG>((LONG)dBounds.dwWidth, clampedDst.right);
+  clampedDst.bottom = std::min<LONG>((LONG)dBounds.dwHeight, clampedDst.bottom);
+
+  const int dstW = (int)(clampedDst.right - clampedDst.left);
+  const int dstH = (int)(clampedDst.bottom - clampedDst.top);
+  const int srcW = (int)(srcRc.right - srcRc.left);
+  const int srcH = (int)(srcRc.bottom - srcRc.top);
+  if (dstW <= 0 || dstH <= 0 || srcW <= 0 || srcH <= 0) {
+    return E_INVALIDARG;
+  }
+
+  PixelFormatInfo srcFmt;
+  PixelFormatInfo dstFmt;
+  if (!GetPixelFormatInfoFromSurface(srcSurf, &srcFmt) || !GetPixelFormatInfoFromSurface(dstSurf, &dstFmt)) {
+    return E_FAIL;
+  }
+  if (srcFmt.bytesPerPixel != dstFmt.bytesPerPixel ||
+      srcFmt.rMask != dstFmt.rMask ||
+      srcFmt.gMask != dstFmt.gMask ||
+      srcFmt.bMask != dstFmt.bMask ||
+      srcFmt.aMask != dstFmt.aMask) {
+    return E_FAIL;
+  }
+
+  DDSURFACEDESC2 ssd{};
+  ssd.dwSize = sizeof(ssd);
+  DDSURFACEDESC2 dsd{};
+  dsd.dwSize = sizeof(dsd);
+
+  HRESULT hrS = srcSurf->Lock(nullptr, &ssd, DDLOCK_WAIT | DDLOCK_READONLY, nullptr);
+  if (FAILED(hrS) || !ssd.lpSurface || ssd.lPitch <= 0) {
+    if (SUCCEEDED(hrS)) {
+      srcSurf->Unlock(nullptr);
+    }
+    return FAILED(hrS) ? hrS : E_FAIL;
+  }
+
+  HRESULT hrD = dstSurf->Lock(nullptr, &dsd, DDLOCK_WAIT, nullptr);
+  if (FAILED(hrD) || !dsd.lpSurface || dsd.lPitch <= 0) {
+    srcSurf->Unlock(nullptr);
+    if (SUCCEEDED(hrD)) {
+      dstSurf->Unlock(nullptr);
+    }
+    return FAILED(hrD) ? hrD : E_FAIL;
+  }
+
+  const int bpp = srcFmt.bytesPerPixel;
+  const uint8_t* sBase = (const uint8_t*)ssd.lpSurface;
+  uint8_t* dBase = (uint8_t*)dsd.lpSurface;
+  const int sPitch = (int)ssd.lPitch;
+  const int dPitch = (int)dsd.lPitch;
+
+  // Fixed-point mapping: clamped dst -> src in 16.16.
+  const int32_t xStep = (int32_t)(((int64_t)srcW << 16) / dstW);
+  const int32_t yStep = (int32_t)(((int64_t)srcH << 16) / dstH);
+
+  for (int y = 0; y < dstH; y++) {
+    const int32_t sy16 = (int32_t)((int64_t)y * yStep);
+    int sy = (sy16 >> 16);
+    int fy = sy16 & 0xFFFF;
+    if (sy < 0) {
+      sy = 0;
+      fy = 0;
+    }
+    if (sy >= srcH - 1) {
+      sy = std::max(0, srcH - 2);
+      fy = 0xFFFF;
+    }
+
+    for (int x = 0; x < dstW; x++) {
+      const int32_t sx16 = (int32_t)((int64_t)x * xStep);
+      int sx = (sx16 >> 16);
+      int fx = sx16 & 0xFFFF;
+      if (sx < 0) {
+        sx = 0;
+        fx = 0;
+      }
+      if (sx >= srcW - 1) {
+        sx = std::max(0, srcW - 2);
+        fx = 0xFFFF;
+      }
+
+      const int sX0 = srcRc.left + sx;
+      const int sY0 = srcRc.top + sy;
+
+      const uint32_t p00 = ReadPixel(sBase, sPitch, sX0, sY0, bpp);
+      const uint32_t p10 = ReadPixel(sBase, sPitch, sX0 + 1, sY0, bpp);
+      const uint32_t p01 = ReadPixel(sBase, sPitch, sX0, sY0 + 1, bpp);
+      const uint32_t p11 = ReadPixel(sBase, sPitch, sX0 + 1, sY0 + 1, bpp);
+
+      uint8_t r00, g00, b00, a00;
+      uint8_t r10, g10, b10, a10;
+      uint8_t r01, g01, b01, a01;
+      uint8_t r11, g11, b11, a11;
+      UnpackRGBA(srcFmt, p00, &r00, &g00, &b00, &a00);
+      UnpackRGBA(srcFmt, p10, &r10, &g10, &b10, &a10);
+      UnpackRGBA(srcFmt, p01, &r01, &g01, &b01, &a01);
+      UnpackRGBA(srcFmt, p11, &r11, &g11, &b11, &a11);
+
+      const int invFx = 0x10000 - fx;
+      const int invFy = 0x10000 - fy;
+
+      auto lerp2 = [&](int c00, int c10, int c01, int c11) -> uint8_t {
+        const int top = (c00 * invFx + c10 * fx) >> 16;
+        const int bot = (c01 * invFx + c11 * fx) >> 16;
+        const int out = (top * invFy + bot * fy) >> 16;
+        return (uint8_t)std::clamp(out, 0, 255);
+      };
+
+      const uint8_t r = lerp2(r00, r10, r01, r11);
+      const uint8_t g = lerp2(g00, g10, g01, g11);
+      const uint8_t b = lerp2(b00, b10, b01, b11);
+      const uint8_t a = lerp2(a00, a10, a01, a11);
+      const uint32_t outPx = PackRGBA(dstFmt, r, g, b, a);
+
+      const int dX = clampedDst.left + x;
+      const int dY = clampedDst.top + y;
+      WritePixel(dBase, dPitch, dX, dY, bpp, outPx);
+    }
+  }
+
+  dstSurf->Unlock(nullptr);
+  srcSurf->Unlock(nullptr);
+  return DD_OK;
 }
 
 // --- Originals / hook targets ---
@@ -748,16 +1101,29 @@ static HRESULT STDMETHODCALLTYPE Hook_DDS7_Flip(LPDIRECTDRAWSURFACE7 primary, LP
   // Window resizing (if any) is handled once after primary/backbuffer exist.
 
   RECT src{0, 0, (LONG)srcW, (LONG)srcH};
-  RECT dst{0, 0, (LONG)clientW, (LONG)clientH};
+  RECT dst{};
+  if (!GetClientRectInScreen(hwnd, &dst)) {
+    // Fallback (should be rare). Note: primary surface blits are normally screen-space.
+    dst = MakeRectFromXYWH(0, 0, clientW, clientH);
+  }
 
   HRESULT hr = DDERR_GENERIC;
   if (cfg.method == SurfaceScaleMethod::kPoint) {
     // Try to avoid introducing extra latency: don't force DDBLT_WAIT.
     // If the blit can't be scheduled immediately, do a one-time blocking fallback
     // to avoid intermittent unscaled presents.
-    hr = primary->Blt(&dst, back, &src, DDBLT_DONOTWAIT, nullptr);
+    // Use original Blt pointer (avoid re-entering our Blt hook).
+    if (g_fpDDS7_Blt) {
+      hr = g_fpDDS7_Blt(primary, &dst, back, &src, DDBLT_DONOTWAIT, nullptr);
+    } else {
+      hr = primary->Blt(&dst, back, &src, DDBLT_DONOTWAIT, nullptr);
+    }
     if (hr == DDERR_WASSTILLDRAWING) {
-      hr = primary->Blt(&dst, back, &src, DDBLT_WAIT, nullptr);
+      if (g_fpDDS7_Blt) {
+        hr = g_fpDDS7_Blt(primary, &dst, back, &src, DDBLT_WAIT, nullptr);
+      } else {
+        hr = primary->Blt(&dst, back, &src, DDBLT_WAIT, nullptr);
+      }
     }
   } else {
     // GDI StretchBlt path for smoother filtering.
@@ -800,6 +1166,15 @@ static HRESULT STDMETHODCALLTYPE Hook_DDS7_Flip(LPDIRECTDRAWSURFACE7 primary, LP
 
   SafeRelease(back);
 
+  {
+    bool expected = false;
+    if (SUCCEEDED(hr) && g_loggedScaleViaFlip.compare_exchange_strong(expected, true)) {
+      Tracef("Flip: scaled via %s (method=%ls)",
+             (cfg.method == SurfaceScaleMethod::kPoint) ? "DirectDraw::Blt stretch" : "GDI StretchBlt",
+             SurfaceScaleMethodToString(cfg.method));
+    }
+  }
+
   if (FAILED(hr)) {
     Tracef("Flip: scale blit failed hr=0x%08lX; falling back to original Flip", (unsigned long)hr);
     return g_fpDDS7_Flip(primary, targetOverride, flags);
@@ -830,6 +1205,154 @@ static HRESULT STDMETHODCALLTYPE Hook_DDS7_Blt(LPDIRECTDRAWSURFACE7 self,
   if (!g_fpDDS7_Blt) {
     return DDERR_GENERIC;
   }
+
+  // Many DirectDraw games (and some wrappers) present via primary->Blt instead of Flip.
+  // If this is a present-style blit to the primary surface, apply scaling here.
+  const SurfaceScaleConfig& cfg = GetSurfaceScaleConfig();
+  if (IsScalingEnabled() && src) {
+    HWND hwnd = nullptr;
+    DWORD coop = 0;
+    LPDIRECTDRAWSURFACE7 primarySnap = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(g_stateMutex);
+      hwnd = g_hwnd;
+      coop = g_coopFlags;
+      primarySnap = g_primary;
+    }
+
+    const bool isPrimary = (primarySnap && self == primarySnap);
+    if (isPrimary && hwnd && !IsFullscreenCoopFlags(coop)) {
+      // Marker so logs can confirm you're running the updated Blt-scaling build.
+      {
+        static std::atomic<bool> logged{false};
+        bool expected = false;
+        if (logged.compare_exchange_strong(expected, true)) {
+          Tracef("Blt: present-scaling hook active (v2)");
+        }
+      }
+
+      // Determine source rect size.
+      DDSURFACEDESC2 sd{};
+      sd.dwSize = sizeof(sd);
+      HRESULT hrDesc = src->GetSurfaceDesc(&sd);
+      if (SUCCEEDED(hrDesc) && sd.dwWidth && sd.dwHeight) {
+        RECT localSrc = srcRect ? *srcRect : MakeRectFromXYWH(0, 0, (int)sd.dwWidth, (int)sd.dwHeight);
+        const LONG sW = localSrc.right - localSrc.left;
+        const LONG sH = localSrc.bottom - localSrc.top;
+
+        int clientW = 0, clientH = 0;
+        if (sW > 0 && sH > 0 && GetClientSize(hwnd, &clientW, &clientH)) {
+          const LONG dstW = dst ? (dst->right - dst->left) : 0;
+          const LONG dstH = dst ? (dst->bottom - dst->top) : 0;
+
+          // Treat as a present-style call if destination covers either the original render size
+          // (common) OR already matches the client size (app/wrapper is already stretching).
+          // This avoids missing the common case where the wrapper stretches with point sampling.
+            const bool looksLikePresent =
+              (!dst) ||
+              (dst && ((dstW == sW && dstH == sH) || (dstW == clientW && dstH == clientH)));
+
+          if (looksLikePresent) {
+            RECT localDst{};
+            if (!GetClientRectInScreen(hwnd, &localDst)) {
+              localDst = MakeRectFromXYWH(0, 0, clientW, clientH);
+            }
+
+            HRESULT hrScale = DDERR_GENERIC;
+            if (cfg.method == SurfaceScaleMethod::kPoint) {
+              // Keep original flags if possible, but drop effects.
+              const DWORD bltFlags = (flags & (DDBLT_WAIT | DDBLT_DONOTWAIT));
+              hrScale = g_fpDDS7_Blt(self, &localDst, src, &localSrc, bltFlags ? bltFlags : DDBLT_DONOTWAIT, nullptr);
+              if (hrScale == DDERR_WASSTILLDRAWING) {
+                hrScale = g_fpDDS7_Blt(self, &localDst, src, &localSrc, DDBLT_WAIT, nullptr);
+              }
+            } else {
+              // GDI filtered stretch.
+              HDC hdcDst = nullptr;
+              HDC hdcSrc = nullptr;
+              HRESULT hrDst = self->GetDC(&hdcDst);
+              HRESULT hrSrc = src->GetDC(&hdcSrc);
+              if (SUCCEEDED(hrDst) && SUCCEEDED(hrSrc) && hdcDst && hdcSrc) {
+                (void)SetStretchBltMode(hdcDst, HALFTONE);
+                (void)SetBrushOrgEx(hdcDst, 0, 0, nullptr);
+                BOOL ok = StretchBlt(hdcDst,
+                                    localDst.left,
+                                    localDst.top,
+                                    localDst.right - localDst.left,
+                                    localDst.bottom - localDst.top,
+                                    hdcSrc,
+                                    localSrc.left,
+                                    localSrc.top,
+                                    localSrc.right - localSrc.left,
+                                    localSrc.bottom - localSrc.top,
+                                    SRCCOPY);
+                src->ReleaseDC(hdcSrc);
+                self->ReleaseDC(hdcDst);
+                hrScale = ok ? DD_OK : E_FAIL;
+              } else {
+                if (hdcSrc) {
+                  src->ReleaseDC(hdcSrc);
+                }
+                if (hdcDst) {
+                  self->ReleaseDC(hdcDst);
+                }
+                // Fallback 1: CPU bilinear via Lock (works even when GetDC is unsupported by wrappers).
+                hrScale = TryScaleViaLockBilinear(self, localDst, src, localSrc);
+                if (SUCCEEDED(hrScale)) {
+                  bool expected = false;
+                  if (g_loggedLockScale.compare_exchange_strong(expected, true)) {
+                    Tracef("Blt: filtered scaling via Lock/CPU active (method=%ls)", SurfaceScaleMethodToString(cfg.method));
+                  }
+                } else {
+                  // Fallback 2: point stretch.
+                  hrScale = g_fpDDS7_Blt(self, &localDst, src, &localSrc, DDBLT_DONOTWAIT, nullptr);
+                  if (FAILED(hrScale)) {
+                    hrScale = g_fpDDS7_Blt(self, &localDst, src, &localSrc, DDBLT_WAIT, nullptr);
+                  }
+                }
+                bool expected = false;
+                if (g_loggedFilteredFallback.compare_exchange_strong(expected, true)) {
+                  Tracef("Blt: filtered method requested (%ls) but GetDC failed; falling back to point stretch", SurfaceScaleMethodToString(cfg.method));
+                  Tracef("Blt: GetDC results hrDst=0x%08lX hrSrc=0x%08lX", (unsigned long)hrDst, (unsigned long)hrSrc);
+                }
+              }
+            }
+
+            if (SUCCEEDED(hrScale)) {
+              bool expected = false;
+              if (g_loggedScaleViaBlt.compare_exchange_strong(expected, true)) {
+                Tracef("Blt: scaled via %s (method=%ls)",
+                       (cfg.method == SurfaceScaleMethod::kPoint) ? "DirectDraw::Blt stretch" : "GDI StretchBlt",
+                       SurfaceScaleMethodToString(cfg.method));
+              }
+              return DD_OK;
+            }
+            // If our scaling failed, fall through to the original call.
+          }
+          // If scaling is enabled and we didn't treat this as present-style, log once with details.
+          if (!looksLikePresent && cfg.method != SurfaceScaleMethod::kPoint) {
+            static std::atomic<uint32_t> skips{0};
+            const uint32_t c = skips.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (c <= 3) {
+              Tracef("Blt: filtered scaling skipped (not present-style):");
+              TraceRectInline("  dst", dst);
+              TraceRectInline("  src", &localSrc);
+              Tracef("  srcW=%ld srcH=%ld clientW=%d clientH=%d flags=0x%08lX", (long)sW, (long)sH, clientW, clientH, (unsigned long)flags);
+            }
+          }
+        }
+      } else {
+        static std::atomic<uint32_t> descFails{0};
+        const uint32_t c = descFails.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (c <= 3) {
+          Tracef("Blt: src->GetSurfaceDesc failed hr=0x%08lX (cannot decide present-style)", (unsigned long)hrDesc);
+          TraceRectInline("  dst", dst);
+          TraceRectInline("  src", srcRect);
+        }
+      }
+    }
+  }
+
   return g_fpDDS7_Blt(self, dst, src, srcRect, flags, fx);
 }
 

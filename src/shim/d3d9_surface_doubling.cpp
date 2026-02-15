@@ -929,10 +929,24 @@ static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* device,
   hr = device->StretchRect(src, pSourceRect, dst, nullptr, filter);
   if (FAILED(hr) && st.scaleMethod == SurfaceScaleMethod::kBicubic) {
     // Fallback: many drivers reject GAUSSIANQUAD for StretchRect.
+    {
+      static std::atomic<bool> logged{false};
+      bool expected = false;
+      if (logged.compare_exchange_strong(expected, true)) {
+        D3D9Tracef("Present: bicubic requested but GAUSSIANQUAD rejected; falling back to linear");
+      }
+    }
     hr = device->StretchRect(src, pSourceRect, dst, nullptr, D3DTEXF_LINEAR);
   }
   if (FAILED(hr) && st.scaleMethod != SurfaceScaleMethod::kPoint) {
     // Last-chance fallback.
+    {
+      static std::atomic<bool> logged{false};
+      bool expected = false;
+      if (logged.compare_exchange_strong(expected, true)) {
+        D3D9Tracef("Present: filtered scaling rejected; falling back to point");
+      }
+    }
     hr = device->StretchRect(src, pSourceRect, dst, nullptr, D3DTEXF_POINT);
   }
   if (FAILED(hr)) {
