@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <cwctype>
+#include <cwchar>
 #include <cstdio>
 #include <thread>
 #include <sstream>
@@ -106,7 +107,7 @@ static const wchar_t* GetWrapperExeNameForUsage() {
 static std::wstring BuildUsageMessage() {
   const std::wstring exe = GetWrapperExeNameForUsage();
   return L"Usage:\n"
-         L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] <target_exe> [target arguments...]\n\n"
+         L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic>] <target_exe> [target arguments...]\n\n"
          L"Examples:\n"
          L"  " + exe + L" C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" --db .\\HKLM.sqlite C:\\Apps\\TargetApp.exe\n"
@@ -117,7 +118,9 @@ static std::wstring BuildUsageMessage() {
 static int ParseLaunchArguments(std::wstring& targetExe,
                                 std::vector<std::wstring>& forwardedArgs,
                                 std::wstring& debugApisCsv,
-                                std::wstring& dbPathArg) {
+                                std::wstring& dbPathArg,
+                                std::wstring& scaleArg,
+                                std::wstring& scaleMethodArg) {
   const std::vector<std::wstring> rawArgs = GetRawArgs();
   if (rawArgs.empty()) {
     ShowError(BuildUsageMessage());
@@ -149,6 +152,64 @@ static int ParseLaunchArguments(std::wstring& targetExe,
       i += 2;
       continue;
     }
+
+    auto startsWith = [](const std::wstring& s, const std::wstring& prefix) {
+      return s.rfind(prefix, 0) == 0;
+    };
+    auto toLower = [](const std::wstring& s) {
+      std::wstring out = s;
+      for (wchar_t& ch : out) {
+        ch = std::towlower(ch);
+      }
+      return out;
+    };
+
+    if (rawArgs[i] == L"--scale" || startsWith(rawArgs[i], L"--scale=")) {
+      std::wstring value;
+      if (rawArgs[i] == L"--scale") {
+        if (i + 1 >= rawArgs.size()) {
+          ShowError(L"Missing value for --scale. Expected a number between 1.1 and 100.");
+          return 1;
+        }
+        value = rawArgs[i + 1];
+        i += 2;
+      } else {
+        value = rawArgs[i].substr(std::wstring(L"--scale=").size());
+        i += 1;
+      }
+
+      wchar_t* end = nullptr;
+      const double v = wcstod(value.c_str(), &end);
+      if (end == value.c_str() || v < 1.1 || v > 100.0) {
+        ShowError(L"Invalid --scale value. Expected a number between 1.1 and 100.");
+        return 1;
+      }
+      scaleArg = value;
+      continue;
+    }
+
+    if (rawArgs[i] == L"--scale-method" || startsWith(rawArgs[i], L"--scale-method=")) {
+      std::wstring value;
+      if (rawArgs[i] == L"--scale-method") {
+        if (i + 1 >= rawArgs.size()) {
+          ShowError(L"Missing value for --scale-method. Expected point, bilinear, or bicubic.");
+          return 1;
+        }
+        value = rawArgs[i + 1];
+        i += 2;
+      } else {
+        value = rawArgs[i].substr(std::wstring(L"--scale-method=").size());
+        i += 1;
+      }
+
+      const std::wstring lower = toLower(value);
+      if (lower != L"point" && lower != L"bilinear" && lower != L"bicubic") {
+        ShowError(L"Invalid --scale-method. Expected point, bilinear, or bicubic.");
+        return 1;
+      }
+      scaleMethodArg = lower;
+      continue;
+    }
     break;
   }
 
@@ -159,6 +220,22 @@ static int ParseLaunchArguments(std::wstring& targetExe,
 
   targetExe = rawArgs[i];
   forwardedArgs.assign(rawArgs.begin() + i + 1, rawArgs.end());
+
+  // Forward scaling options into the target command line so the injected shim can see them.
+  // NOTE: This may be visible to the target app as well.
+  if (!scaleArg.empty() || !scaleMethodArg.empty()) {
+    std::vector<std::wstring> injected;
+    if (!scaleArg.empty()) {
+      injected.emplace_back(L"--scale");
+      injected.emplace_back(scaleArg);
+    }
+    if (!scaleMethodArg.empty()) {
+      injected.emplace_back(L"--scale-method");
+      injected.emplace_back(scaleMethodArg);
+    }
+    injected.insert(injected.end(), forwardedArgs.begin(), forwardedArgs.end());
+    forwardedArgs.swap(injected);
+  }
   return -1;
 }
 
@@ -436,7 +513,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   std::vector<std::wstring> args;
   std::wstring debugApisCsv;
   std::wstring dbPathArg;
-  int parseResult = ParseLaunchArguments(targetExe, args, debugApisCsv, dbPathArg);
+  std::wstring scaleArg;
+  std::wstring scaleMethodArg;
+  int parseResult = ParseLaunchArguments(targetExe, args, debugApisCsv, dbPathArg, scaleArg, scaleMethodArg);
   if (parseResult >= 0) {
     return parseResult;
   }

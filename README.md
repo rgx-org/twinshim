@@ -115,8 +115,8 @@ This suite includes a Windows-only workflow test that launches `hklm_wrapper_cli
 ## Run
 
 ```text
-hklm_wrapper.exe [--db <path>] [--debug <api-list|all>] <target_exe> [target args...]
-hklm_wrapper_cli.exe [--db <path>] [--debug <api-list|all>] <target_exe> [target args...]
+hklm_wrapper.exe [--db <path>] [--debug <api-list|all>] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic>] <target_exe> [target args...]
+hklm_wrapper_cli.exe [--db <path>] [--debug <api-list|all>] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic>] <target_exe> [target args...]
 ```
 
 Use `hklm_wrapper.exe` for normal GUI-driven launches.
@@ -267,6 +267,10 @@ WHERE key_path='HKLM\\Software\\MyApp'
   - default (unset) / `all` / `full` / `extended`: enable full ANSI + wide hook set
   - `core`/`minimal`/`wide`/`unicode`: wide-only core + legacy/key-info/enum hooks
   - `off`/`none`/`disabled`: inject shim but skip hook installation (diagnostics/fallback)
+- Optional windowed scaling (Direct3D9 and some DirectDraw paths) is controlled by target command-line options:
+  - `--scale <1.1-100>`: scaling factor (e.g. `--scale 2` for 2x)
+  - `--scale-method <point|bilinear|bicubic>`: sampling method (default: `point`)
+  - Use `hklm_wrapper_cli.exe --debug all ...` to see `[shim:d3d9]` / `[shim:ddraw]` probe output.
 - macOS/Linux cross-build validates compile/link only; runtime injection/hooking must be validated natively on Windows.
 - Hooks a small set of APIs (both `*W` and `*A` where applicable):
   - Open/create keys: `RegOpenKey(Ex)`, `RegCreateKey(Ex)`

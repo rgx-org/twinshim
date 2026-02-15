@@ -120,6 +120,14 @@ else()
 
   add_library(hklm_shim SHARED
     src/shim/dllmain.cpp
+    src/shim/d3d9_surface_doubling.cpp
+    src/shim/d3d9_surface_doubling.h
+    src/shim/ddraw_surface_doubling.cpp
+    src/shim/ddraw_surface_doubling.h
+    src/shim/surface_scale_config.cpp
+    src/shim/surface_scale_config.h
+    src/shim/minhook_runtime.cpp
+    src/shim/minhook_runtime.h
     src/shim/registry_hooks.cpp
     src/shim/registry_hooks.h
     src/shim/registry_hooks_hooks_core.inl
@@ -136,7 +144,7 @@ else()
     target_compile_options(hklm_shim PRIVATE -fpermissive)
   endif()
 
-  target_link_libraries(hklm_shim PRIVATE hklm_common minhook_static)
+  target_link_libraries(hklm_shim PRIVATE hklm_common minhook_static dxguid shell32)
   target_compile_definitions(hklm_shim PRIVATE UNICODE _UNICODE NOMINMAX)
 
   add_executable(hklm_wrapper WIN32
@@ -147,7 +155,7 @@ else()
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(hklm_wrapper PRIVATE -municode)
   endif()
-  target_link_libraries(hklm_wrapper PRIVATE hklm_common)
+  target_link_libraries(hklm_wrapper PRIVATE hklm_common shell32)
   target_compile_definitions(hklm_wrapper PRIVATE UNICODE _UNICODE NOMINMAX)
 
   add_executable(hklm_wrapper_cli
@@ -158,7 +166,7 @@ else()
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(hklm_wrapper_cli PRIVATE -municode)
   endif()
-  target_link_libraries(hklm_wrapper_cli PRIVATE hklm_common)
+  target_link_libraries(hklm_wrapper_cli PRIVATE hklm_common shell32)
   target_compile_definitions(hklm_wrapper_cli PRIVATE UNICODE _UNICODE NOMINMAX HKLM_WRAPPER_CONSOLE_APP)
 
   add_executable(hklmreg

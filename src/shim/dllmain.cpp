@@ -1,5 +1,8 @@
 #include "shim/registry_hooks.h"
 
+#include "shim/d3d9_surface_doubling.h"
+#include "shim/ddraw_surface_doubling.h"
+
 #include <windows.h>
 
 namespace {
@@ -50,6 +53,13 @@ DWORD WINAPI HookInitThreadProc(LPVOID) {
   ShimTrace("[shim] hook init thread started\n");
 
   const bool installed = hklmwrap::InstallRegistryHooks();
+
+  // Install optional D3D9 Present scaling hooks (best-effort, async).
+  (void)hklmwrap::InstallD3D9SurfaceDoublingHooks();
+
+  // Install optional DirectDraw scaling hooks (for dgVoodoo ddraw->dxgi paths).
+  (void)hklmwrap::InstallDDrawSurfaceDoublingHooks();
+
   if (!installed) {
     InterlockedExchange(&g_hooksInstalled, -1);
     ShimTrace("[shim] hook install failed\n");
@@ -81,6 +91,12 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (lpvReserved != nullptr) {
       return TRUE;
     }
+
+    // Best-effort cleanup for optional D3D9 hooks.
+    hklmwrap::RemoveD3D9SurfaceDoublingHooks();
+
+    // Best-effort cleanup for optional DirectDraw hooks.
+    hklmwrap::RemoveDDrawSurfaceDoublingHooks();
 
     HANDLE initThread = g_hookInitThread;
     g_hookInitThread = nullptr;

@@ -2,6 +2,8 @@
 #include "shim/registry_hooks_trace.h"
 #include "shim/registry_hooks_utils.h"
 
+#include "shim/minhook_runtime.h"
+
 #include "common/local_registry_store.h"
 #include "common/path_util.h"
 
@@ -493,7 +495,7 @@ bool InstallRegistryHooks() {
     return true;
   }
 
-  if (MH_Initialize() != MH_OK) {
+  if (!AcquireMinHook()) {
     return false;
   }
   g_minHookInitialized.store(true, std::memory_order_release);
@@ -551,13 +553,13 @@ bool InstallRegistryHooks() {
   }
 
   if (!ok) {
-    MH_Uninitialize();
+    ReleaseMinHook();
     g_minHookInitialized.store(false, std::memory_order_release);
     return false;
   }
 
   if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
-    MH_Uninitialize();
+    ReleaseMinHook();
     g_minHookInitialized.store(false, std::memory_order_release);
     return false;
   }
@@ -575,7 +577,7 @@ void RemoveRegistryHooks() {
     MH_DisableHook(MH_ALL_HOOKS);
   }
   if (g_minHookInitialized.exchange(false, std::memory_order_acq_rel)) {
-    MH_Uninitialize();
+    ReleaseMinHook();
   }
   DestroyAllVirtualKeys();
 }
