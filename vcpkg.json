@@ -1,5 +1,5 @@
 {
-  "name": "hklm-wrapper",
+  "name": "twinshim",
   "version-string": "0.1.1",
   "dependencies": [
     "sqlite3"

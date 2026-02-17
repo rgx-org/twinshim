@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <cwctype>
+#include <cwchar>
 #include <cstdio>
 #include <thread>
 #include <sstream>
@@ -19,12 +20,33 @@
 
 using namespace hklmwrap;
 
+namespace {
+
+static void SetEnvVarCompat(const wchar_t* primary, const wchar_t* legacy, const wchar_t* value) {
+  if (primary && *primary) {
+    SetEnvironmentVariableW(primary, value);
+  }
+  if (legacy && *legacy) {
+    SetEnvironmentVariableW(legacy, value);
+  }
+}
+
+static bool FileExists(const std::wstring& path) {
+  if (path.empty()) {
+    return false;
+  }
+  DWORD attrs = GetFileAttributesW(path.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+} // namespace
+
 static void ShowError(const std::wstring& message) {
 #if defined(HKLM_WRAPPER_CONSOLE_APP)
   fwprintf(stderr, L"%ls\n", message.c_str());
   fflush(stderr);
 #else
-  MessageBoxW(nullptr, message.c_str(), L"hklm_wrapper", MB_ICONERROR);
+  MessageBoxW(nullptr, message.c_str(), L"TwinShim", MB_ICONERROR);
 #endif
 }
 
@@ -33,7 +55,7 @@ static void ShowInfo(const std::wstring& message) {
   fwprintf(stdout, L"%ls\n", message.c_str());
   fflush(stdout);
 #else
-  MessageBoxW(nullptr, message.c_str(), L"hklm_wrapper", MB_ICONINFORMATION);
+  MessageBoxW(nullptr, message.c_str(), L"TwinShim", MB_ICONINFORMATION);
 #endif
 }
 
@@ -42,7 +64,7 @@ static void TraceLine(const std::wstring& message, bool enabled) {
   if (!enabled) {
     return;
   }
-  fwprintf(stdout, L"[hklm_wrapper] %ls\n", message.c_str());
+  fwprintf(stdout, L"[TwinShim] %ls\n", message.c_str());
   fflush(stdout);
 #else
   (void)message;
@@ -52,7 +74,7 @@ static void TraceLine(const std::wstring& message, bool enabled) {
 
 static std::wstring MakeHookReadyEventName() {
   std::wstringstream ss;
-  ss << L"Local\\hklm_wrapper_hook_ready_" << static_cast<unsigned long>(GetCurrentProcessId())
+  ss << L"Local\\twinshim_hook_ready_" << static_cast<unsigned long>(GetCurrentProcessId())
      << L"_" << static_cast<unsigned long long>(GetTickCount64());
   return ss.str();
 }
@@ -97,16 +119,16 @@ static std::vector<std::wstring> GetRawArgs() {
 
 static const wchar_t* GetWrapperExeNameForUsage() {
 #if defined(HKLM_WRAPPER_CONSOLE_APP)
-  return L"hklm_wrapper_cli.exe";
+  return L"twinshim_cli.exe";
 #else
-  return L"hklm_wrapper.exe";
+  return L"twinshim.exe";
 #endif
 }
 
 static std::wstring BuildUsageMessage() {
   const std::wstring exe = GetWrapperExeNameForUsage();
   return L"Usage:\n"
-         L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] <target_exe> [target arguments...]\n\n"
+         L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic|cr|catmull-rom|lanczos|lanczos3|pixfast>] <target_exe> [target arguments...]\n\n"
          L"Examples:\n"
          L"  " + exe + L" C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" --db .\\HKLM.sqlite C:\\Apps\\TargetApp.exe\n"
@@ -117,7 +139,9 @@ static std::wstring BuildUsageMessage() {
 static int ParseLaunchArguments(std::wstring& targetExe,
                                 std::vector<std::wstring>& forwardedArgs,
                                 std::wstring& debugApisCsv,
-                                std::wstring& dbPathArg) {
+                                std::wstring& dbPathArg,
+                                std::wstring& scaleArg,
+                                std::wstring& scaleMethodArg) {
   const std::vector<std::wstring> rawArgs = GetRawArgs();
   if (rawArgs.empty()) {
     ShowError(BuildUsageMessage());
@@ -149,6 +173,69 @@ static int ParseLaunchArguments(std::wstring& targetExe,
       i += 2;
       continue;
     }
+
+    auto startsWith = [](const std::wstring& s, const std::wstring& prefix) {
+      return s.rfind(prefix, 0) == 0;
+    };
+    auto toLower = [](const std::wstring& s) {
+      std::wstring out = s;
+      for (wchar_t& ch : out) {
+        ch = std::towlower(ch);
+      }
+      return out;
+    };
+
+    if (rawArgs[i] == L"--scale" || startsWith(rawArgs[i], L"--scale=")) {
+      std::wstring value;
+      if (rawArgs[i] == L"--scale") {
+        if (i + 1 >= rawArgs.size()) {
+          ShowError(L"Missing value for --scale. Expected a number between 1.1 and 100.");
+          return 1;
+        }
+        value = rawArgs[i + 1];
+        i += 2;
+      } else {
+        value = rawArgs[i].substr(std::wstring(L"--scale=").size());
+        i += 1;
+      }
+
+      wchar_t* end = nullptr;
+      const double v = wcstod(value.c_str(), &end);
+      if (end == value.c_str() || v < 1.1 || v > 100.0) {
+        ShowError(L"Invalid --scale value. Expected a number between 1.1 and 100.");
+        return 1;
+      }
+      scaleArg = value;
+      continue;
+    }
+
+    if (rawArgs[i] == L"--scale-method" || startsWith(rawArgs[i], L"--scale-method=")) {
+      std::wstring value;
+      if (rawArgs[i] == L"--scale-method") {
+        if (i + 1 >= rawArgs.size()) {
+          ShowError(L"Missing value for --scale-method. Expected point, bilinear, bicubic, cr (catmull-rom), lanczos/lanczos3, or pixfast.");
+          return 1;
+        }
+        value = rawArgs[i + 1];
+        i += 2;
+      } else {
+        value = rawArgs[i].substr(std::wstring(L"--scale-method=").size());
+        i += 1;
+      }
+
+      const std::wstring lower = toLower(value);
+      const bool ok = (lower == L"point") || (lower == L"bilinear") || (lower == L"bicubic") ||
+                      (lower == L"cr") || (lower == L"catmull-rom") || (lower == L"catmullrom") ||
+                      (lower == L"lanczos") || (lower == L"lanczos2") ||
+                      (lower == L"lanczos3") ||
+                      (lower == L"pixfast") || (lower == L"pix") || (lower == L"pixel");
+      if (!ok) {
+        ShowError(L"Invalid --scale-method. Expected point, bilinear, bicubic, cr (catmull-rom), lanczos/lanczos3, or pixfast.");
+        return 1;
+      }
+      scaleMethodArg = lower;
+      continue;
+    }
     break;
   }
 
@@ -159,6 +246,22 @@ static int ParseLaunchArguments(std::wstring& targetExe,
 
   targetExe = rawArgs[i];
   forwardedArgs.assign(rawArgs.begin() + i + 1, rawArgs.end());
+
+  // Forward scaling options into the target command line so the injected shim can see them.
+  // NOTE: This may be visible to the target app as well.
+  if (!scaleArg.empty() || !scaleMethodArg.empty()) {
+    std::vector<std::wstring> injected;
+    if (!scaleArg.empty()) {
+      injected.emplace_back(L"--scale");
+      injected.emplace_back(scaleArg);
+    }
+    if (!scaleMethodArg.empty()) {
+      injected.emplace_back(L"--scale-method");
+      injected.emplace_back(scaleMethodArg);
+    }
+    injected.insert(injected.end(), forwardedArgs.begin(), forwardedArgs.end());
+    forwardedArgs.swap(injected);
+  }
   return -1;
 }
 
@@ -281,7 +384,7 @@ struct DebugPipeBridge {
 
   bool Start() {
     wchar_t pipePath[256]{};
-    swprintf_s(pipePath, L"\\\\.\\pipe\\hklm_wrapper_debug_%lu", GetCurrentProcessId());
+    swprintf_s(pipePath, L"\\\\.\\pipe\\twinshim_debug_%lu", GetCurrentProcessId());
     pipeName = pipePath;
 
     pipe = CreateNamedPipeW(pipeName.c_str(),
@@ -436,7 +539,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   std::vector<std::wstring> args;
   std::wstring debugApisCsv;
   std::wstring dbPathArg;
-  int parseResult = ParseLaunchArguments(targetExe, args, debugApisCsv, dbPathArg);
+  std::wstring scaleArg;
+  std::wstring scaleMethodArg;
+  int parseResult = ParseLaunchArguments(targetExe, args, debugApisCsv, dbPathArg, scaleArg, scaleMethodArg);
   if (parseResult >= 0) {
     return parseResult;
   }
@@ -447,8 +552,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   const std::wstring cwd = GetCurrentDirectoryPath();
   const std::wstring dbPath = ResolveDbPath(dbPathArg, cwd);
 
-  const std::wstring shimPath = CombinePath(wrapperDir, HKLM_WRAPPER_SHIM_DLL_NAME);
-  SetEnvironmentVariableW(L"HKLM_WRAPPER_DB_PATH", dbPath.c_str());
+  std::wstring shimPath = CombinePath(wrapperDir, HKLM_WRAPPER_SHIM_DLL_NAME);
+  if (!FileExists(shimPath)) {
+    const std::wstring legacyShim = CombinePath(wrapperDir, L"hklm_shim.dll");
+    if (FileExists(legacyShim)) {
+      shimPath = legacyShim;
+    }
+  }
+
+  SetEnvVarCompat(L"TWINSHIM_DB_PATH", L"HKLM_WRAPPER_DB_PATH", dbPath.c_str());
+
+  // Also export surface scaling config via environment variables so any injected
+  // components (shim, dgVoodoo add-on, etc) can read it reliably.
+  if (!scaleArg.empty()) {
+    SetEnvVarCompat(L"TWINSHIM_SCALE", L"HKLM_WRAPPER_SCALE", scaleArg.c_str());
+  }
+  if (!scaleMethodArg.empty()) {
+    SetEnvVarCompat(L"TWINSHIM_SCALE_METHOD", L"HKLM_WRAPPER_SCALE_METHOD", scaleMethodArg.c_str());
+  }
 
   DebugPipeBridge debugBridge;
   HANDLE hookReadyEvent = nullptr;
@@ -465,7 +586,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     const std::wstring hookReadyEventName = MakeHookReadyEventName();
     hookReadyEvent = CreateEventW(nullptr, TRUE, FALSE, hookReadyEventName.c_str());
     if (hookReadyEvent) {
-      SetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_READY_EVENT", hookReadyEventName.c_str());
+      SetEnvVarCompat(L"TWINSHIM_HOOK_READY_EVENT", L"HKLM_WRAPPER_HOOK_READY_EVENT", hookReadyEventName.c_str());
     }
 
     if (!debugBridge.Start()) {
@@ -474,8 +595,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
       return 5;
     }
     TraceLine(L"debug pipe created: " + debugBridge.pipeName, traceEnabled);
-    SetEnvironmentVariableW(L"HKLM_WRAPPER_DEBUG_APIS", debugApisCsv.c_str());
-    SetEnvironmentVariableW(L"HKLM_WRAPPER_DEBUG_PIPE", debugBridge.pipeName.c_str());
+    SetEnvVarCompat(L"TWINSHIM_DEBUG_APIS", L"HKLM_WRAPPER_DEBUG_APIS", debugApisCsv.c_str());
+    SetEnvVarCompat(L"TWINSHIM_DEBUG_PIPE", L"HKLM_WRAPPER_DEBUG_PIPE", debugBridge.pipeName.c_str());
   }
 
   std::wstring cmdLine = BuildCommandLine(targetExe, args);
@@ -527,7 +648,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     TerminateProcess(pi.hProcess, 1);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    ShowError(L"Wrapper/target architecture mismatch detected. Ensure hklm_wrapper_cli.exe, hklm_shim.dll, and target EXE have the same bitness (all x86 or all x64).");
+    ShowError(L"Wrapper/target architecture mismatch detected. Ensure twinshim_cli.exe, twinshim_shim.dll (or legacy hklm_shim.dll), and target EXE have the same bitness (all x86 or all x64).");
     return 6;
   }
 
@@ -538,7 +659,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     TerminateProcess(pi.hProcess, 1);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    std::wstring msg = L"Failed to inject hklm_shim.dll into target process: " + FormatWin32Error(injectErr);
+    std::wstring msg = L"Failed to inject shim DLL into target process: " + FormatWin32Error(injectErr);
     ShowError(msg);
     return 2;
   }
@@ -601,7 +722,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     hookReadyEvent = nullptr;
     // Best-effort cleanup of the coordination env var in the wrapper process.
     // (Child already inherited its copy at CreateProcess time.)
-    SetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_READY_EVENT", nullptr);
+    SetEnvVarCompat(L"TWINSHIM_HOOK_READY_EVENT", L"HKLM_WRAPPER_HOOK_READY_EVENT", nullptr);
   }
   return (int)exitCode;
 }

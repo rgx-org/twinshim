@@ -75,3 +75,7 @@ out/
 vcpkg_installed/
 vcpkg/buildtrees/
 vcpkg/packages/
+
+# Third-party SDK blobs (keep documentation)
+third_party/dgvoodoo_addon_sdk/*
+!third_party/dgvoodoo_addon_sdk/README.md

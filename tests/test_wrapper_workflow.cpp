@@ -40,7 +40,7 @@ std::filesystem::path MakeTempWorkflowDir() {
   }
 
   const std::wstring suffix =
-      L"hklm-wrapper-workflow-" + std::to_wstring(static_cast<unsigned long>(GetCurrentProcessId())) + L"-" +
+      L"twinshim-workflow-" + std::to_wstring(static_cast<unsigned long>(GetCurrentProcessId())) + L"-" +
       std::to_wstring(static_cast<unsigned long>(GetTickCount64()));
 
   const std::filesystem::path dir = base / std::filesystem::path(suffix);
@@ -151,8 +151,8 @@ TEST_CASE("shim hook install succeeds in debug workflow run", "[shim][workflow]"
   const std::filesystem::path testsDir = testExePath.parent_path();
   const std::filesystem::path buildDir = testsDir.parent_path();
 
-  const std::filesystem::path wrapperPath = buildDir / "hklm_wrapper_cli.exe";
-  const std::filesystem::path shimPath = buildDir / "hklm_shim.dll";
+  const std::filesystem::path wrapperPath = buildDir / "twinshim_cli.exe";
+  const std::filesystem::path shimPath = buildDir / "twinshim_shim.dll";
   const std::filesystem::path probePath = testsDir / "hklm_workflow_probe.exe";
 
   REQUIRE(std::filesystem::exists(wrapperPath));
@@ -200,8 +200,8 @@ TEST_CASE("wrapper debug mode covers injected hook and store data flow", "[shim]
   const std::filesystem::path testsDir = testExePath.parent_path();
   const std::filesystem::path buildDir = testsDir.parent_path();
 
-  const std::filesystem::path wrapperPath = buildDir / "hklm_wrapper_cli.exe";
-  const std::filesystem::path shimPath = buildDir / "hklm_shim.dll";
+  const std::filesystem::path wrapperPath = buildDir / "twinshim_cli.exe";
+  const std::filesystem::path shimPath = buildDir / "twinshim_shim.dll";
   const std::filesystem::path probePath = testsDir / "hklm_workflow_probe.exe";
 
   REQUIRE(std::filesystem::exists(wrapperPath));
@@ -238,7 +238,7 @@ TEST_CASE("wrapper debug mode covers injected hook and store data flow", "[shim]
   // If this fails, none of the subsequent debug-trace expectations will make sense.
   REQUIRE(run->mergedOutput.find("[shim] hook install succeeded") != std::string::npos);
 
-  const std::string expectedKey = "HKLM\\Software\\hklm-wrapper-workflow\\e2e-";
+  const std::string expectedKey = "HKLM\\Software\\twinshim-workflow\\e2e-";
   CHECK(run->mergedOutput.find("api=RegCreateKeyExW op=create_key") != std::string::npos);
   CHECK(run->mergedOutput.find(expectedKey) != std::string::npos);
   CHECK(run->mergedOutput.find("api=RegSetValueExW op=set_value") != std::string::npos);
@@ -250,7 +250,7 @@ TEST_CASE("wrapper debug mode covers injected hook and store data flow", "[shim]
   LocalRegistryStore store;
   REQUIRE(store.Open(dbPath.wstring()));
 
-  const std::wstring keyPath = L"HKLM\\Software\\hklm-wrapper-workflow\\" + suffix;
+  const std::wstring keyPath = L"HKLM\\Software\\twinshim-workflow\\" + suffix;
   const auto stored = store.GetValue(keyPath, L"WorkflowValue");
   REQUIRE(stored.has_value());
   REQUIRE_FALSE(stored->isDeleted);

@@ -7,6 +7,9 @@
 namespace hklmwrap::testutil {
 
 inline std::filesystem::path GetConfiguredTempBaseDir() {
+  if (const char* env = std::getenv("TWINSHIM_TEST_TMP_BASE"); env && *env) {
+    return std::filesystem::path(env);
+  }
   if (const char* env = std::getenv("HKLM_WRAPPER_TEST_TMP_BASE"); env && *env) {
     return std::filesystem::path(env);
   }
@@ -31,7 +34,7 @@ inline std::filesystem::path GetTestTempDir(const char* subdir) {
   std::error_code ec;
 
   if (auto configured = GetConfiguredTempBaseDir(); !configured.empty()) {
-    auto dir = configured / "hklm-wrapper-tests" / subdir;
+    auto dir = configured / "twinshim-tests" / subdir;
     std::filesystem::create_directories(dir, ec);
     if (!ec) {
       return dir;
@@ -39,7 +42,7 @@ inline std::filesystem::path GetTestTempDir(const char* subdir) {
   }
 
   if (auto system = GetSystemTempBaseDir(); !system.empty()) {
-    auto dir = system / "hklm-wrapper-tests" / subdir;
+    auto dir = system / "twinshim-tests" / subdir;
     std::filesystem::create_directories(dir, ec);
     if (!ec) {
       return dir;

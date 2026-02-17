@@ -90,7 +90,11 @@ void InitializeDebugConfig() {
   std::call_once(g_debugInitOnce, [] {
     wchar_t tokenBuf[4096]{};
     DWORD tokenLen =
-        GetEnvironmentVariableW(L"HKLM_WRAPPER_DEBUG_APIS", tokenBuf, (DWORD)(sizeof(tokenBuf) / sizeof(tokenBuf[0])));
+        GetEnvironmentVariableW(L"TWINSHIM_DEBUG_APIS", tokenBuf, (DWORD)(sizeof(tokenBuf) / sizeof(tokenBuf[0])));
+    if (!tokenLen || tokenLen >= (DWORD)(sizeof(tokenBuf) / sizeof(tokenBuf[0]))) {
+      tokenLen =
+          GetEnvironmentVariableW(L"HKLM_WRAPPER_DEBUG_APIS", tokenBuf, (DWORD)(sizeof(tokenBuf) / sizeof(tokenBuf[0])));
+    }
     if (!tokenLen || tokenLen >= (sizeof(tokenBuf) / sizeof(tokenBuf[0]))) {
       return;
     }
@@ -148,7 +152,11 @@ void EnsureDebugPipeConnected() {
 
   wchar_t pipeBuf[512]{};
   DWORD pipeLen =
-      GetEnvironmentVariableW(L"HKLM_WRAPPER_DEBUG_PIPE", pipeBuf, (DWORD)(sizeof(pipeBuf) / sizeof(pipeBuf[0])));
+      GetEnvironmentVariableW(L"TWINSHIM_DEBUG_PIPE", pipeBuf, (DWORD)(sizeof(pipeBuf) / sizeof(pipeBuf[0])));
+  if (!pipeLen || pipeLen >= (DWORD)(sizeof(pipeBuf) / sizeof(pipeBuf[0]))) {
+    pipeLen =
+        GetEnvironmentVariableW(L"HKLM_WRAPPER_DEBUG_PIPE", pipeBuf, (DWORD)(sizeof(pipeBuf) / sizeof(pipeBuf[0])));
+  }
   if (!pipeLen || pipeLen >= (sizeof(pipeBuf) / sizeof(pipeBuf[0]))) {
     return;
   }

@@ -2,6 +2,8 @@
 #include "shim/registry_hooks_trace.h"
 #include "shim/registry_hooks_utils.h"
 
+#include "shim/minhook_runtime.h"
+
 #include "common/local_registry_store.h"
 #include "common/path_util.h"
 
@@ -42,7 +44,10 @@ std::atomic<bool> g_hooksEnabled{false};
 
 bool ShouldInstallExtendedHooks() {
   wchar_t modeBuf[64]{};
-  DWORD modeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
+  DWORD modeLen = GetEnvironmentVariableW(L"TWINSHIM_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
+  if (!modeLen || modeLen >= (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0]))) {
+    modeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
+  }
   if (!modeLen || modeLen >= (sizeof(modeBuf) / sizeof(modeBuf[0]))) {
     // Default to full ANSI+W coverage to avoid mixed-callsite handle issues
     // where a virtual handle created by *W is consumed by an unhooked *A API.
@@ -58,7 +63,10 @@ bool ShouldInstallExtendedHooks() {
 
 bool ShouldDisableHooks() {
   wchar_t modeBuf[64]{};
-  DWORD modeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
+  DWORD modeLen = GetEnvironmentVariableW(L"TWINSHIM_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
+  if (!modeLen || modeLen >= (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0]))) {
+    modeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
+  }
   if (!modeLen || modeLen >= (sizeof(modeBuf) / sizeof(modeBuf[0]))) {
     return false;
   }
@@ -97,7 +105,10 @@ std::mutex g_storeMutex;
 void EnsureStoreOpen() {
   std::call_once(g_openOnce, [] {
     wchar_t dbPath[4096];
-    DWORD n = GetEnvironmentVariableW(L"HKLM_WRAPPER_DB_PATH", dbPath, (DWORD)(sizeof(dbPath) / sizeof(dbPath[0])));
+    DWORD n = GetEnvironmentVariableW(L"TWINSHIM_DB_PATH", dbPath, (DWORD)(sizeof(dbPath) / sizeof(dbPath[0])));
+    if (!n || n >= (DWORD)(sizeof(dbPath) / sizeof(dbPath[0]))) {
+      n = GetEnvironmentVariableW(L"HKLM_WRAPPER_DB_PATH", dbPath, (DWORD)(sizeof(dbPath) / sizeof(dbPath[0])));
+    }
     if (!n || n >= (sizeof(dbPath) / sizeof(dbPath[0]))) {
       // Fallback: HKLM.sqlite in the current working directory.
       wchar_t cwdBuf[4096]{};
@@ -493,7 +504,7 @@ bool InstallRegistryHooks() {
     return true;
   }
 
-  if (MH_Initialize() != MH_OK) {
+  if (!AcquireMinHook()) {
     return false;
   }
   g_minHookInitialized.store(true, std::memory_order_release);
@@ -551,13 +562,13 @@ bool InstallRegistryHooks() {
   }
 
   if (!ok) {
-    MH_Uninitialize();
+    ReleaseMinHook();
     g_minHookInitialized.store(false, std::memory_order_release);
     return false;
   }
 
   if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
-    MH_Uninitialize();
+    ReleaseMinHook();
     g_minHookInitialized.store(false, std::memory_order_release);
     return false;
   }
@@ -575,7 +586,7 @@ void RemoveRegistryHooks() {
     MH_DisableHook(MH_ALL_HOOKS);
   }
   if (g_minHookInitialized.exchange(false, std::memory_order_acq_rel)) {
-    MH_Uninitialize();
+    ReleaseMinHook();
   }
   DestroyAllVirtualKeys();
 }

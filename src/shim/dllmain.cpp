@@ -1,13 +1,38 @@
 #include "shim/registry_hooks.h"
 
+#include "shim/d3d9_surface_scaler.h"
+#include "shim/ddraw_surface_scaler.h"
+
 #include <windows.h>
 
 namespace {
 
+static DWORD GetEnvVarCompat(const wchar_t* primary, const wchar_t* legacy, wchar_t* buf, DWORD bufCount) {
+  if (!buf || bufCount == 0) {
+    return 0;
+  }
+  if (primary && *primary) {
+    DWORD n = GetEnvironmentVariableW(primary, buf, bufCount);
+    if (n && n < bufCount) {
+      return n;
+    }
+  }
+  if (legacy && *legacy) {
+    DWORD n = GetEnvironmentVariableW(legacy, buf, bufCount);
+    if (n && n < bufCount) {
+      return n;
+    }
+  }
+  return 0;
+}
+
 void SignalHookReadyEvent() {
   wchar_t nameBuf[512]{};
-  DWORD nameLen = GetEnvironmentVariableW(
-      L"HKLM_WRAPPER_HOOK_READY_EVENT", nameBuf, (DWORD)(sizeof(nameBuf) / sizeof(nameBuf[0])));
+  DWORD nameLen = GetEnvVarCompat(
+      L"TWINSHIM_HOOK_READY_EVENT",
+      L"HKLM_WRAPPER_HOOK_READY_EVENT",
+      nameBuf,
+      (DWORD)(sizeof(nameBuf) / sizeof(nameBuf[0])));
   if (!nameLen || nameLen >= (sizeof(nameBuf) / sizeof(nameBuf[0]))) {
     return;
   }
@@ -27,7 +52,11 @@ void ShimTrace(const char* text) {
   }
 
   wchar_t pipeBuf[512]{};
-  DWORD pipeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_DEBUG_PIPE", pipeBuf, (DWORD)(sizeof(pipeBuf) / sizeof(pipeBuf[0])));
+  DWORD pipeLen = GetEnvVarCompat(
+      L"TWINSHIM_DEBUG_PIPE",
+      L"HKLM_WRAPPER_DEBUG_PIPE",
+      pipeBuf,
+      (DWORD)(sizeof(pipeBuf) / sizeof(pipeBuf[0])));
   if (!pipeLen || pipeLen >= (sizeof(pipeBuf) / sizeof(pipeBuf[0]))) {
     return;
   }
@@ -50,6 +79,13 @@ DWORD WINAPI HookInitThreadProc(LPVOID) {
   ShimTrace("[shim] hook init thread started\n");
 
   const bool installed = hklmwrap::InstallRegistryHooks();
+
+  // Install optional D3D9 Present scaling hooks (best-effort, async).
+  (void)hklmwrap::InstallD3D9SurfaceScalerHooks();
+
+  // Install optional DirectDraw scaling hooks (system ddraw.dll paths only).
+  (void)hklmwrap::InstallDDrawSurfaceScalerHooks();
+
   if (!installed) {
     InterlockedExchange(&g_hooksInstalled, -1);
     ShimTrace("[shim] hook install failed\n");
@@ -81,6 +117,12 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (lpvReserved != nullptr) {
       return TRUE;
     }
+
+    // Best-effort cleanup for optional D3D9 hooks.
+    hklmwrap::RemoveD3D9SurfaceScalerHooks();
+
+    // Best-effort cleanup for optional DirectDraw hooks.
+    hklmwrap::RemoveDDrawSurfaceScalerHooks();
 
     HANDLE initThread = g_hookInitThread;
     g_hookInitThread = nullptr;

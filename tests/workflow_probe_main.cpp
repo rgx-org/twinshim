@@ -17,7 +17,7 @@ int wmain(int argc, wchar_t** argv) {
   }
 
   const std::wstring suffix = argv[1];
-  const std::wstring subKey = L"Software\\hklm-wrapper-workflow\\" + suffix;
+  const std::wstring subKey = L"Software\\twinshim-workflow\\" + suffix;
   const std::wstring valueName = L"WorkflowValue";
   const std::wstring valueText = L"wrapped-ok";
 
