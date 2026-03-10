@@ -31,6 +31,24 @@ Practical flow:
 
 This repo uses CMake presets and vcpkg (`sqlite3` comes from `vcpkg.json`).
 
+### macOS: native hklmreg build
+
+Build only the local `hklmreg` CLI on macOS (no wrapper/shim/injector targets):
+
+```bash
+cmake --preset macos-hklmreg-release
+cmake --build --preset macos-hklmreg-release
+```
+
+Helper script:
+
+```bash
+./scripts/build-macos-hklmreg.sh
+```
+
+Expected artifact:
+- `build/macos-hklmreg-release/hklmreg`
+
 ### macOS/Linux: cross-compile Windows x86 (MinGW)
 
 Install host tools:

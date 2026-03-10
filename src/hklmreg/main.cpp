@@ -2,7 +2,9 @@
 #include "common/utf8.h"
 #include "hklmreg/reg_file.h"
 
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 #include <fstream>
 #include <iostream>
@@ -80,7 +82,7 @@ static bool StdoutIsConsole() {
 }
 #endif
 
-int wmain(int argc, wchar_t** argv) {
+static int RunMain(int argc, wchar_t** argv) {
   if (argc < 2) {
     PrintUsage();
     return 2;
@@ -264,3 +266,33 @@ int wmain(int argc, wchar_t** argv) {
   PrintUsage();
   return 2;
 }
+
+#if defined(_WIN32)
+int wmain(int argc, wchar_t** argv) {
+  return RunMain(argc, argv);
+}
+#else
+int main(int argc, char** argv) {
+  std::vector<std::wstring> argvWide;
+  argvWide.reserve(static_cast<size_t>(argc));
+  for (int i = 0; i < argc; i++) {
+    const std::string argUtf8 = (argv[i] != nullptr) ? std::string(argv[i]) : std::string();
+    std::wstring argWide = Utf8ToWide(argUtf8);
+    if (argWide.empty() && !argUtf8.empty()) {
+      // Keep argument bytes visible even if UTF-8 decode fails.
+      argWide.reserve(argUtf8.size());
+      for (unsigned char ch : argUtf8) {
+        argWide.push_back(static_cast<wchar_t>(ch));
+      }
+    }
+    argvWide.push_back(std::move(argWide));
+  }
+
+  std::vector<wchar_t*> argvWidePtrs;
+  argvWidePtrs.reserve(argvWide.size());
+  for (auto& arg : argvWide) {
+    argvWidePtrs.push_back(arg.data());
+  }
+  return RunMain(argc, argvWidePtrs.data());
+}
+#endif

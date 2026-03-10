@@ -92,6 +92,24 @@
       }
     },
     {
+      "name": "macos-hklmreg-release",
+      "displayName": "macOS native hklmreg Release",
+      "description": "Build host-native hklmreg on macOS (no Win32 shim/injector targets).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/macos-hklmreg-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "HKLM_WRAPPER_ENABLE_TESTS": "OFF",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
       "name": "native-tests",
       "displayName": "Native host unit tests",
       "description": "Configure native host build for CTest/Catch2 unit tests.",
@@ -166,6 +184,13 @@
       "configuration": "Release",
       "targets": [
         "install"
+      ]
+    },
+    {
+      "name": "macos-hklmreg-release",
+      "configurePreset": "macos-hklmreg-release",
+      "targets": [
+        "hklmreg"
       ]
     },
     {

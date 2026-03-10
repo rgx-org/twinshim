@@ -12,11 +12,83 @@ option(HKLM_WRAPPER_ENABLE_DGVOODOO_ADDON "Build dgVoodoo AddOn DLL (requires dg
 
 include(CTest)
 
-if(NOT WIN32)
-  message(STATUS "This project targets Windows (Win32 API hooking + process injection).")
-  message(STATUS "On non-Windows targets, no build targets are generated.")
-  message(STATUS "If you meant to cross-compile from macOS/Linux, configure with a Windows toolchain (see README).")
-else()
+# --- SQLite3 dependency (prefer config packages over FindSQLite3 module mode) ---
+set(_sqlite_target "")
+
+find_package(unofficial-sqlite3 CONFIG QUIET)
+if(TARGET unofficial::sqlite3::sqlite3)
+  set(_sqlite_target unofficial::sqlite3::sqlite3)
+endif()
+
+if(_sqlite_target STREQUAL "")
+  find_package(SQLite3 CONFIG QUIET)
+  if(TARGET SQLite::SQLite3)
+    set(_sqlite_target SQLite::SQLite3)
+  elseif(TARGET SQLite3::SQLite3)
+    set(_sqlite_target SQLite3::SQLite3)
+  endif()
+endif()
+
+if(_sqlite_target STREQUAL "")
+  find_package(SQLite3 QUIET MODULE)
+  if(TARGET SQLite::SQLite3)
+    set(_sqlite_target SQLite::SQLite3)
+  elseif(TARGET SQLite3::SQLite3)
+    set(_sqlite_target SQLite3::SQLite3)
+  endif()
+endif()
+
+if(_sqlite_target STREQUAL "")
+  message(FATAL_ERROR
+    "SQLite3 not found.\n"
+    "Options:\n"
+    "  - Use vcpkg (recommended): set CMAKE_TOOLCHAIN_FILE to vcpkg.cmake and install sqlite3\n"
+    "  - Or install SQLite3 dev packages and ensure CMake can find them\n")
+endif()
+
+add_library(hklm_common STATIC
+  src/common/arg_quote.cpp
+  src/common/arg_quote.h
+  src/common/local_registry_store.cpp
+  src/common/local_registry_store.h
+  src/common/path_util.cpp
+  src/common/path_util.h
+  src/common/utf8.cpp
+  src/common/utf8.h
+  src/common/win32_error.cpp
+  src/common/win32_error.h
+)
+
+target_include_directories(hklm_common PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/config
+)
+
+if(WIN32)
+  target_compile_definitions(hklm_common PUBLIC
+    UNICODE
+    _UNICODE
+    NOMINMAX
+  )
+  target_link_libraries(hklm_common PUBLIC advapi32)
+endif()
+
+target_link_libraries(hklm_common PUBLIC ${_sqlite_target})
+
+add_executable(hklmreg
+  src/hklmreg/main.cpp
+  src/hklmreg/reg_file.cpp
+  src/hklmreg/reg_file.h
+)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
+  target_link_options(hklmreg PRIVATE -municode)
+endif()
+target_link_libraries(hklmreg PRIVATE hklm_common)
+if(WIN32)
+  target_compile_definitions(hklmreg PRIVATE UNICODE _UNICODE NOMINMAX)
+endif()
+
+if(WIN32)
 
   if(MSVC AND HKLM_WRAPPER_MSVC_STATIC_RUNTIME)
     # Avoid runtime collisions with app-local MSVC redistributable DLLs in
@@ -31,68 +103,6 @@ else()
       -static-libstdc++
     )
   endif()
-
-  add_library(hklm_common STATIC
-    src/common/arg_quote.cpp
-    src/common/arg_quote.h
-    src/common/local_registry_store.cpp
-    src/common/local_registry_store.h
-    src/common/path_util.cpp
-    src/common/path_util.h
-    src/common/utf8.cpp
-    src/common/utf8.h
-    src/common/win32_error.cpp
-    src/common/win32_error.h
-  )
-
-  target_include_directories(hklm_common PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/config
-  )
-
-  target_compile_definitions(hklm_common PUBLIC
-    UNICODE
-    _UNICODE
-    NOMINMAX
-  )
-
-  target_link_libraries(hklm_common PUBLIC advapi32)
-
-  # --- SQLite3 dependency (prefer config packages over FindSQLite3 module mode) ---
-  set(_sqlite_target "")
-
-  find_package(unofficial-sqlite3 CONFIG QUIET)
-  if(TARGET unofficial::sqlite3::sqlite3)
-    set(_sqlite_target unofficial::sqlite3::sqlite3)
-  endif()
-
-  if(_sqlite_target STREQUAL "")
-    find_package(SQLite3 CONFIG QUIET)
-    if(TARGET SQLite::SQLite3)
-      set(_sqlite_target SQLite::SQLite3)
-    elseif(TARGET SQLite3::SQLite3)
-      set(_sqlite_target SQLite3::SQLite3)
-    endif()
-  endif()
-
-  if(_sqlite_target STREQUAL "")
-    find_package(SQLite3 QUIET MODULE)
-    if(TARGET SQLite::SQLite3)
-      set(_sqlite_target SQLite::SQLite3)
-    elseif(TARGET SQLite3::SQLite3)
-      set(_sqlite_target SQLite3::SQLite3)
-    endif()
-  endif()
-
-  if(_sqlite_target STREQUAL "")
-    message(FATAL_ERROR
-      "SQLite3 not found.\n"
-      "Options:\n"
-      "  - Use vcpkg (recommended): set CMAKE_TOOLCHAIN_FILE to vcpkg.cmake and install sqlite3\n"
-      "  - Or install SQLite3 dev packages and ensure CMake can find them\n")
-  endif()
-
-  target_link_libraries(hklm_common PUBLIC ${_sqlite_target})
 
 # --- MinHook dependency (for registry API hooking in the injected DLL) ---
   if(HKLM_WRAPPER_FETCH_MINHOOK)
@@ -232,17 +242,6 @@ else()
   target_link_libraries(hklm_wrapper_cli PRIVATE hklm_common shell32)
   target_compile_definitions(hklm_wrapper_cli PRIVATE UNICODE _UNICODE NOMINMAX HKLM_WRAPPER_CONSOLE_APP)
 
-  add_executable(hklmreg
-    src/hklmreg/main.cpp
-    src/hklmreg/reg_file.cpp
-    src/hklmreg/reg_file.h
-  )
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_link_options(hklmreg PRIVATE -municode)
-  endif()
-  target_link_libraries(hklmreg PRIVATE hklm_common)
-  target_compile_definitions(hklmreg PRIVATE UNICODE _UNICODE NOMINMAX)
-
   install(TARGETS
     hklm_wrapper
     hklm_wrapper_cli
@@ -251,6 +250,10 @@ else()
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION bin
   )
+else()
+  message(STATUS "Configured host-native build for hklmreg only.")
+  message(STATUS "Windows injection/shim targets are disabled on non-Windows hosts.")
+  install(TARGETS hklmreg RUNTIME DESTINATION bin)
 endif()
 
 if(HKLM_WRAPPER_ENABLE_TESTS AND BUILD_TESTING)
