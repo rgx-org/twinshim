@@ -10,6 +10,12 @@ option(HKLM_WRAPPER_ENABLE_TESTS "Build unit tests" ON)
 option(HKLM_WRAPPER_MSVC_STATIC_RUNTIME "Use /MT runtime for wrapper/shim on MSVC" ON)
 option(HKLM_WRAPPER_ENABLE_DGVOODOO_ADDON "Build dgVoodoo AddOn DLL (requires dgVoodoo AddOn SDK)" OFF)
 
+if(MSVC AND HKLM_WRAPPER_MSVC_STATIC_RUNTIME)
+  # This must be set before targets are created; targets snapshot the current
+  # default runtime at creation time.
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 include(CTest)
 
 # --- SQLite3 dependency (prefer config packages over FindSQLite3 module mode) ---
@@ -89,13 +95,6 @@ if(WIN32)
 endif()
 
 if(WIN32)
-
-  if(MSVC AND HKLM_WRAPPER_MSVC_STATIC_RUNTIME)
-    # Avoid runtime collisions with app-local MSVC redistributable DLLs in
-    # injected processes by linking wrapper/shim against static runtime.
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-  endif()
-
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_link_options(
       -static
