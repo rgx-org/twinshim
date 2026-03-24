@@ -16,6 +16,16 @@ int wmain(int argc, wchar_t** argv) {
     return FailWithCode(2);
   }
 
+  if (std::wstring(argv[1]) == L"--open-real-only") {
+    HKEY key = nullptr;
+    const LONG rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE", 0, KEY_READ, &key);
+    if (rc != ERROR_SUCCESS || !key) {
+      return FailWithCode(20);
+    }
+    RegCloseKey(key);
+    return 0;
+  }
+
   const std::wstring suffix = argv[1];
   const std::wstring subKey = L"Software\\twinshim-workflow\\" + suffix;
   const std::wstring valueName = L"WorkflowValue";

@@ -145,10 +145,11 @@ static const wchar_t* GetWrapperExeNameForUsage() {
 static std::wstring BuildUsageMessage() {
   const std::wstring exe = GetWrapperExeNameForUsage();
   return L"Usage:\n"
-         L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic|cr|catmull-rom|lanczos|lanczos3|pixfast>] <target_exe> [target arguments...]\n\n"
+         L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] [--readthrough] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic|cr|catmull-rom|lanczos|lanczos3|pixfast>] <target_exe> [target arguments...]\n\n"
          L"Examples:\n"
          L"  " + exe + L" C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" --db .\\HKLM.sqlite C:\\Apps\\TargetApp.exe\n"
+         L"  " + exe + L" --readthrough C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" --debug RegOpenKey,RegQueryValue C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" C:\\Apps\\TargetApp.exe --mode test --config \"C:\\path with spaces\\cfg.json\"";
 }
@@ -157,6 +158,7 @@ static int ParseLaunchArguments(std::wstring& targetExe,
                                 std::vector<std::wstring>& forwardedArgs,
                                 std::wstring& debugApisCsv,
                                 std::wstring& dbPathArg,
+                                bool& readThrough,
                                 std::wstring& scaleArg,
                                 std::wstring& scaleMethodArg) {
   const std::vector<std::wstring> rawArgs = GetRawArgs();
@@ -188,6 +190,11 @@ static int ParseLaunchArguments(std::wstring& targetExe,
       }
       dbPathArg = rawArgs[i + 1];
       i += 2;
+      continue;
+    }
+    if (rawArgs[i] == L"--readthrough") {
+      readThrough = true;
+      i += 1;
       continue;
     }
 
@@ -556,9 +563,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   std::vector<std::wstring> args;
   std::wstring debugApisCsv;
   std::wstring dbPathArg;
+  bool readThrough = false;
   std::wstring scaleArg;
   std::wstring scaleMethodArg;
-  int parseResult = ParseLaunchArguments(targetExe, args, debugApisCsv, dbPathArg, scaleArg, scaleMethodArg);
+  int parseResult = ParseLaunchArguments(targetExe, args, debugApisCsv, dbPathArg, readThrough, scaleArg, scaleMethodArg);
   if (parseResult >= 0) {
     return parseResult;
   }
@@ -578,6 +586,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   }
 
   SetEnvVarCompat(L"TWINSHIM_DB_PATH", L"HKLM_WRAPPER_DB_PATH", dbPath.c_str());
+  SetEnvVarCompat(L"TWINSHIM_READTHROUGH", L"HKLM_WRAPPER_READTHROUGH", readThrough ? L"1" : nullptr);
 
   // Also export surface scaling config via environment variables so any injected
   // components (shim, dgVoodoo add-on, etc) can read it reliably.

@@ -41,13 +41,31 @@ std::unordered_map<HKEY, std::wstring> g_realKeys;
 thread_local bool g_bypass = false;
 std::atomic<bool> g_minHookInitialized{false};
 std::atomic<bool> g_hooksEnabled{false};
+std::atomic<int> g_readThroughEnabled{-1};
+
+DWORD GetEnvironmentVariableCompat(const wchar_t* primary, const wchar_t* legacy, wchar_t* buf, DWORD bufCount) {
+  if (!buf || bufCount == 0) {
+    return 0;
+  }
+  if (primary && *primary) {
+    DWORD n = GetEnvironmentVariableW(primary, buf, bufCount);
+    if (n && n < bufCount) {
+      return n;
+    }
+  }
+  if (legacy && *legacy) {
+    DWORD n = GetEnvironmentVariableW(legacy, buf, bufCount);
+    if (n && n < bufCount) {
+      return n;
+    }
+  }
+  return 0;
+}
 
 bool ShouldInstallExtendedHooks() {
   wchar_t modeBuf[64]{};
-  DWORD modeLen = GetEnvironmentVariableW(L"TWINSHIM_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
-  if (!modeLen || modeLen >= (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0]))) {
-    modeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
-  }
+  DWORD modeLen =
+      GetEnvironmentVariableCompat(L"TWINSHIM_HOOK_MODE", L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
   if (!modeLen || modeLen >= (sizeof(modeBuf) / sizeof(modeBuf[0]))) {
     // Default to full ANSI+W coverage to avoid mixed-callsite handle issues
     // where a virtual handle created by *W is consumed by an unhooked *A API.
@@ -63,16 +81,39 @@ bool ShouldInstallExtendedHooks() {
 
 bool ShouldDisableHooks() {
   wchar_t modeBuf[64]{};
-  DWORD modeLen = GetEnvironmentVariableW(L"TWINSHIM_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
-  if (!modeLen || modeLen >= (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0]))) {
-    modeLen = GetEnvironmentVariableW(L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
-  }
+  DWORD modeLen =
+      GetEnvironmentVariableCompat(L"TWINSHIM_HOOK_MODE", L"HKLM_WRAPPER_HOOK_MODE", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
   if (!modeLen || modeLen >= (sizeof(modeBuf) / sizeof(modeBuf[0]))) {
     return false;
   }
   std::wstring mode(modeBuf, modeBuf + modeLen);
   std::transform(mode.begin(), mode.end(), mode.begin(), [](wchar_t ch) { return (wchar_t)std::towlower(ch); });
   return mode == L"off" || mode == L"none" || mode == L"disabled";
+}
+
+bool ShouldReadThrough() {
+  const int cached = g_readThroughEnabled.load(std::memory_order_acquire);
+  if (cached >= 0) {
+    return cached == 1;
+  }
+
+  wchar_t modeBuf[64]{};
+  DWORD modeLen = GetEnvironmentVariableCompat(
+      L"TWINSHIM_READTHROUGH", L"HKLM_WRAPPER_READTHROUGH", modeBuf, (DWORD)(sizeof(modeBuf) / sizeof(modeBuf[0])));
+
+  bool enabled = false;
+  if (modeLen && modeLen < (sizeof(modeBuf) / sizeof(modeBuf[0]))) {
+    std::wstring mode(modeBuf, modeBuf + modeLen);
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](wchar_t ch) { return (wchar_t)std::towlower(ch); });
+    enabled = mode == L"1" || mode == L"true" || mode == L"yes" || mode == L"on";
+  }
+
+  const int desired = enabled ? 1 : 0;
+  int expected = -1;
+  if (!g_readThroughEnabled.compare_exchange_strong(expected, desired, std::memory_order_acq_rel)) {
+    return g_readThroughEnabled.load(std::memory_order_acquire) == 1;
+  }
+  return enabled;
 }
 
 struct BypassGuard {
@@ -105,10 +146,8 @@ std::mutex g_storeMutex;
 void EnsureStoreOpen() {
   std::call_once(g_openOnce, [] {
     wchar_t dbPath[4096];
-    DWORD n = GetEnvironmentVariableW(L"TWINSHIM_DB_PATH", dbPath, (DWORD)(sizeof(dbPath) / sizeof(dbPath[0])));
-    if (!n || n >= (DWORD)(sizeof(dbPath) / sizeof(dbPath[0]))) {
-      n = GetEnvironmentVariableW(L"HKLM_WRAPPER_DB_PATH", dbPath, (DWORD)(sizeof(dbPath) / sizeof(dbPath[0])));
-    }
+    DWORD n =
+        GetEnvironmentVariableCompat(L"TWINSHIM_DB_PATH", L"HKLM_WRAPPER_DB_PATH", dbPath, (DWORD)(sizeof(dbPath) / sizeof(dbPath[0])));
     if (!n || n >= (sizeof(dbPath) / sizeof(dbPath[0]))) {
       // Fallback: HKLM.sqlite in the current working directory.
       wchar_t cwdBuf[4096]{};
@@ -252,8 +291,13 @@ MergedNames GetMergedValueNames(const std::wstring& keyPath, HKEY real) {
   std::unordered_map<std::wstring, std::wstring> foldedToName;
 
   EnsureStoreOpen();
+  bool keyDeleted = false;
   {
     std::lock_guard<std::mutex> lock(g_storeMutex);
+    keyDeleted = g_store.IsKeyDeleted(keyPath);
+    if (keyDeleted) {
+      return merged;
+    }
     for (const auto& r : g_store.ListValues(keyPath)) {
       auto f = CaseFold(r.valueName);
       if (r.isDeleted) {
@@ -279,7 +323,7 @@ MergedNames GetMergedValueNames(const std::wstring& keyPath, HKEY real) {
   }
 
   // Merge real values.
-  if (real && fpRegEnumValueW) {
+  if (ShouldReadThrough() && real && fpRegEnumValueW) {
     DWORD index = 0;
     while (true) {
       std::wstring name;
@@ -338,8 +382,13 @@ std::vector<std::wstring> GetMergedSubKeyNames(const std::wstring& keyPath, HKEY
   std::vector<std::wstring> out;
 
   EnsureStoreOpen();
+  bool keyDeleted = false;
   {
     std::lock_guard<std::mutex> lock(g_storeMutex);
+    keyDeleted = g_store.IsKeyDeleted(keyPath);
+    if (keyDeleted) {
+      return out;
+    }
     // Deleted children: any immediate child whose full path is deleted.
     for (const auto& child : g_store.ListImmediateSubKeys(keyPath)) {
       std::wstring full = keyPath;
@@ -362,7 +411,7 @@ std::vector<std::wstring> GetMergedSubKeyNames(const std::wstring& keyPath, HKEY
     }
   }
 
-  if (real && fpRegEnumKeyExW) {
+  if (ShouldReadThrough() && real && fpRegEnumKeyExW) {
     DWORD index = 0;
     while (true) {
       std::wstring name;

@@ -134,7 +134,7 @@ This suite includes a Windows-only workflow test that launches `twinshim_cli.exe
 
 ```text
 Usage:
-  twinshim_cli.exe [--db <path>] [--debug <api1,api2,...|all>] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic|cr|catmull-rom|lanczos|lanczos3>] <target_exe> [target arguments...]
+  twinshim_cli.exe [--db <path>] [--debug <api1,api2,...|all>] [--readthrough] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic|cr|catmull-rom|lanczos|lanczos3>] <target_exe> [target arguments...]
 ```
 
 Use `twinshim.exe` for normal GUI-driven launches.
@@ -145,9 +145,16 @@ Examples:
 ```text
 twinshim.exe C:\Path\To\TargetApp.exe
 twinshim.exe --db .\HKLM.sqlite C:\Path\To\TargetApp.exe
+twinshim.exe --readthrough C:\Path\To\TargetApp.exe
 twinshim_cli.exe --debug RegOpenKey,RegQueryValue C:\Path\To\TargetApp.exe
 twinshim_cli.exe --debug all C:\Path\To\TargetApp.exe
 ```
+
+Registry virtualization scope:
+
+- Only `HKEY_LOCAL_MACHINE` paths are virtualized. Other root hives pass through to the real registry unchanged.
+- By default, `HKLM` reads and writes stay inside the local SQLite-backed store.
+- `--readthrough` changes reads to overlay mode: consult the local store first, then fall through to the real `HKLM` key/value data when the local store misses. Local tombstones still hide the real registry.
 
 ## dgVoodoo (scaling)
 

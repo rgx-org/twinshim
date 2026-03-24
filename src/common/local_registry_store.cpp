@@ -378,8 +378,14 @@ bool LocalRegistryStore::KeyExistsLocally(const std::wstring& keyPath) {
     }
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
-    return rc == SQLITE_ROW;
+    if (rc == SQLITE_ROW) {
+      return true;
+    }
   }
+
+  // Treat any visible child key as evidence that the parent key exists for
+  // traversal/open purposes, even if that parent was never explicitly written.
+  return !ListImmediateSubKeys(keyPath).empty();
 }
 
 bool LocalRegistryStore::PutValue(const std::wstring& keyPath,

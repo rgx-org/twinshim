@@ -194,6 +194,25 @@ TEST_CASE("LocalRegistryStore key/value lookups are case-insensitive", "[store]"
   CHECK(store.IsKeyDeleted(keyImport));
 }
 
+TEST_CASE("LocalRegistryStore treats parent keys with visible descendants as existing", "[store]") {
+  LocalRegistryStore store;
+  const std::wstring dbPath = MakeTempDbPath();
+  REQUIRE(store.Open(dbPath));
+
+  const std::wstring childKey = L"HKLM\\Software\\ExampleVendor\\ExampleApp";
+  const std::wstring parentKey = L"HKLM\\Software\\ExampleVendor";
+  const std::wstring valueName = L"InstallDir";
+  const std::vector<uint8_t> payload = {0x42};
+
+  REQUIRE(store.PutValue(childKey, valueName, REG_BINARY, payload.data(), static_cast<uint32_t>(payload.size())));
+
+  CHECK(store.KeyExistsLocally(parentKey));
+  CHECK(store.KeyExistsLocally(L"HKLM\\Software"));
+
+  REQUIRE(store.DeleteKeyTree(parentKey));
+  CHECK_FALSE(store.KeyExistsLocally(parentKey));
+}
+
 TEST_CASE("LocalRegistryStore WAL changes are visible across concurrent opens", "[store][wal]") {
   const std::wstring dbPath = MakeTempDbPath();
 

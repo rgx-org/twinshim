@@ -305,3 +305,79 @@ TEST_CASE("wrapper debug mode covers injected hook and store data flow", "[shim]
   std::error_code cleanupEc;
   std::filesystem::remove_all(isolatedDir, cleanupEc);
 }
+
+TEST_CASE("wrapper defaults to local-only registry reads", "[shim][workflow]") {
+  const std::filesystem::path testExePath = GetModuleFilePath();
+  REQUIRE_FALSE(testExePath.empty());
+
+  const std::filesystem::path testsDir = testExePath.parent_path();
+  const std::filesystem::path buildDir = testsDir.parent_path();
+
+  const std::filesystem::path wrapperPath = buildDir / "twinshim_cli.exe";
+  const std::filesystem::path shimPath = buildDir / "twinshim_shim.dll";
+  const std::filesystem::path probePath = testsDir / "hklm_workflow_probe.exe";
+
+  REQUIRE(std::filesystem::exists(wrapperPath));
+  REQUIRE(std::filesystem::exists(shimPath));
+  REQUIRE(std::filesystem::exists(probePath));
+
+  const std::filesystem::path isolatedDir = MakeTempWorkflowDir();
+  REQUIRE_FALSE(isolatedDir.empty());
+
+  REQUIRE(CopyRuntimeArtifact(wrapperPath, isolatedDir));
+  REQUIRE(CopyRuntimeArtifact(shimPath, isolatedDir));
+  REQUIRE(CopyRuntimeArtifact(probePath, isolatedDir));
+
+  const std::filesystem::path isolatedWrapperPath = isolatedDir / wrapperPath.filename();
+  const std::filesystem::path isolatedProbePath = isolatedDir / probePath.filename();
+
+  const auto run = RunWithCapturedOutput(isolatedWrapperPath.wstring(),
+                                         {isolatedProbePath.wstring(), L"--open-real-only"},
+                                         isolatedDir.wstring());
+
+  REQUIRE(run.has_value());
+  CAPTURE(run->exitCode);
+  CAPTURE(run->mergedOutput);
+  CHECK(run->exitCode == 20);
+
+  std::error_code cleanupEc;
+  std::filesystem::remove_all(isolatedDir, cleanupEc);
+}
+
+TEST_CASE("wrapper readthrough mode falls back to the real registry", "[shim][workflow]") {
+  const std::filesystem::path testExePath = GetModuleFilePath();
+  REQUIRE_FALSE(testExePath.empty());
+
+  const std::filesystem::path testsDir = testExePath.parent_path();
+  const std::filesystem::path buildDir = testsDir.parent_path();
+
+  const std::filesystem::path wrapperPath = buildDir / "twinshim_cli.exe";
+  const std::filesystem::path shimPath = buildDir / "twinshim_shim.dll";
+  const std::filesystem::path probePath = testsDir / "hklm_workflow_probe.exe";
+
+  REQUIRE(std::filesystem::exists(wrapperPath));
+  REQUIRE(std::filesystem::exists(shimPath));
+  REQUIRE(std::filesystem::exists(probePath));
+
+  const std::filesystem::path isolatedDir = MakeTempWorkflowDir();
+  REQUIRE_FALSE(isolatedDir.empty());
+
+  REQUIRE(CopyRuntimeArtifact(wrapperPath, isolatedDir));
+  REQUIRE(CopyRuntimeArtifact(shimPath, isolatedDir));
+  REQUIRE(CopyRuntimeArtifact(probePath, isolatedDir));
+
+  const std::filesystem::path isolatedWrapperPath = isolatedDir / wrapperPath.filename();
+  const std::filesystem::path isolatedProbePath = isolatedDir / probePath.filename();
+
+  const auto run = RunWithCapturedOutput(isolatedWrapperPath.wstring(),
+                                         {L"--readthrough", isolatedProbePath.wstring(), L"--open-real-only"},
+                                         isolatedDir.wstring());
+
+  REQUIRE(run.has_value());
+  CAPTURE(run->exitCode);
+  CAPTURE(run->mergedOutput);
+  CHECK(run->exitCode == 0);
+
+  std::error_code cleanupEc;
+  std::filesystem::remove_all(isolatedDir, cleanupEc);
+}

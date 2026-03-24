@@ -214,6 +214,11 @@ LONG WINAPI Hook_RegEnumValueW(HKEY hKey,
     }
   }
 
+  if (!ShouldReadThrough()) {
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueW", keyPath, dwIndex, name, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
+  }
+
   if (!real) {
     return TraceEnumReadResultAndReturn(
         L"RegEnumValueW", keyPath, dwIndex, name, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
@@ -325,6 +330,11 @@ LONG WINAPI Hook_RegEnumValueA(HKEY hKey,
       return TraceEnumReadResultAndReturn(
           L"RegEnumValueA", keyPath, dwIndex, nameW, ERROR_SUCCESS, true, type, lpData, needed, false);
     }
+  }
+
+  if (!ShouldReadThrough()) {
+    return TraceEnumReadResultAndReturn(
+        L"RegEnumValueA", keyPath, dwIndex, nameW, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
   }
 
   if (!real) {
@@ -766,6 +776,11 @@ LONG WINAPI Hook_RegQueryValueW(HKEY hKey, LPCWSTR lpSubKey, LPWSTR lpData, PLON
     }
   }
 
+  if (!ShouldReadThrough()) {
+    return TraceReadResultAndReturn(
+        L"RegQueryValueW", full, L"(Default)", ERROR_FILE_NOT_FOUND, true, REG_SZ, nullptr, 0, false);
+  }
+
   HKEY realParent = RealHandleForFallback(hKey);
   if (!realParent) {
     if (full.rfind(L"HKLM\\", 0) == 0) {
@@ -855,6 +870,11 @@ LONG WINAPI Hook_RegQueryValueA(HKEY hKey, LPCSTR lpSubKey, LPSTR lpData, PLONG 
                                       (DWORD)needed,
                                       false);
     }
+  }
+
+  if (!ShouldReadThrough()) {
+    return TraceReadResultAndReturn(
+        L"RegQueryValueA", full, L"(Default)", ERROR_FILE_NOT_FOUND, true, REG_SZ, nullptr, 0, false);
   }
 
   HKEY realParent = RealHandleForFallback(hKey);

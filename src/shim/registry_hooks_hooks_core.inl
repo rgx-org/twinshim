@@ -29,12 +29,23 @@ LONG WINAPI Hook_RegOpenKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD ulOptions, REG
   }
 
   EnsureStoreOpen();
+  bool localExists = false;
   {
     std::lock_guard<std::mutex> lock(g_storeMutex);
     if (g_store.IsKeyDeleted(full)) {
       *phkResult = nullptr;
       return ERROR_FILE_NOT_FOUND;
     }
+    localExists = g_store.KeyExistsLocally(full);
+  }
+
+  if (!ShouldReadThrough()) {
+    if (localExists) {
+      *phkResult = reinterpret_cast<HKEY>(NewVirtualKey(full, nullptr));
+      return ERROR_SUCCESS;
+    }
+    *phkResult = nullptr;
+    return ERROR_FILE_NOT_FOUND;
   }
 
   HKEY realParent = RealHandleForFallback(hKey);
@@ -61,13 +72,9 @@ LONG WINAPI Hook_RegOpenKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD ulOptions, REG
     return ERROR_SUCCESS;
   }
 
-  EnsureStoreOpen();
-  {
-    std::lock_guard<std::mutex> lock(g_storeMutex);
-    if (g_store.KeyExistsLocally(full)) {
-      *phkResult = reinterpret_cast<HKEY>(NewVirtualKey(full, nullptr));
-      return ERROR_SUCCESS;
-    }
+  if (localExists) {
+    *phkResult = reinterpret_cast<HKEY>(NewVirtualKey(full, nullptr));
+    return ERROR_SUCCESS;
   }
 
   *phkResult = nullptr;
@@ -277,6 +284,11 @@ LONG WINAPI Hook_RegQueryValueExW(HKEY hKey,
     }
   }
 
+  if (!ShouldReadThrough()) {
+    return TraceReadResultAndReturn(
+        L"RegQueryValueExW", keyPath, valueName, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
+  }
+
   HKEY real = RealHandleForFallback(hKey);
   if (auto* vk = AsVirtual(hKey)) {
     if (!vk->real) {
@@ -418,6 +430,10 @@ LSTATUS WINAPI Hook_RegGetValueW(HKEY hKey,
                                       needed,
                                       false);
     }
+  }
+
+  if (!ShouldReadThrough()) {
+    return TraceReadResultAndReturn(L"RegGetValueW", full, valueName, ERROR_FILE_NOT_FOUND, false, REG_NONE, nullptr, 0, false);
   }
 
   // Fall back to the real registry if possible (never pass virtual handles).
