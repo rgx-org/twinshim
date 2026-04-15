@@ -219,6 +219,8 @@ if(WIN32)
 
   add_executable(hklm_wrapper WIN32
     src/wrapper/main.cpp
+    src/wrapper/ddraw_devices.cpp
+    src/wrapper/ddraw_devices.h
     src/wrapper/process_inject.cpp
     src/wrapper/process_inject.h
   )
@@ -231,6 +233,8 @@ if(WIN32)
 
   add_executable(hklm_wrapper_cli
     src/wrapper/main.cpp
+    src/wrapper/ddraw_devices.cpp
+    src/wrapper/ddraw_devices.h
     src/wrapper/process_inject.cpp
     src/wrapper/process_inject.h
   )

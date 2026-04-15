@@ -1,7 +1,9 @@
 #include "common/arg_quote.h"
+#include "common/local_registry_store.h"
 #include "common/path_util.h"
 #include "common/win32_error.h"
 
+#include "wrapper/ddraw_devices.h"
 #include "wrapper/process_inject.h"
 
 #include "wrapper_config.h"
@@ -145,13 +147,21 @@ static const wchar_t* GetWrapperExeNameForUsage() {
 static std::wstring BuildUsageMessage() {
   const std::wstring exe = GetWrapperExeNameForUsage();
   return L"Usage:\n"
-         L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] [--readthrough] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic|cr|catmull-rom|lanczos|lanczos3|pixfast>] <target_exe> [target arguments...]\n\n"
+         L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] [--readthrough] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic|cr|catmull-rom|lanczos|lanczos3|pixfast>] <target_exe> [target arguments...]\n"
+         L"  " + exe + L" [--db <path>] --list-devices\n"
+         L"  " + exe + L" [--db <path>] --device\n\n"
+         L"Device options:\n"
+         L"  --list-devices  Enumerate all D3D devices via ddraw.dll and print their GUIDs.\n"
+         L"  --device        Select the best TnL-capable device and save its GUID to the\n"
+         L"                  HKLM registry store under Software\\RuneBreakers\\Ragnarok.\n\n"
          L"Examples:\n"
          L"  " + exe + L" C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" --db .\\HKLM.sqlite C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" --readthrough C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" --debug RegOpenKey,RegQueryValue C:\\Apps\\TargetApp.exe\n"
-         L"  " + exe + L" C:\\Apps\\TargetApp.exe --mode test --config \"C:\\path with spaces\\cfg.json\"";
+         L"  " + exe + L" C:\\Apps\\TargetApp.exe --mode test --config \"C:\\path with spaces\\cfg.json\"\n"
+         L"  " + exe + L" --list-devices\n"
+         L"  " + exe + L" --db .\\HKLM.sqlite --device";
 }
 
 static int ParseLaunchArguments(std::wstring& targetExe,
@@ -471,6 +481,101 @@ struct DebugPipeBridge {
   }
 };
 
+// --------------------------------------------------------------------------
+// --list-devices / --device  (D3D device enumeration via ddraw.dll)
+// --------------------------------------------------------------------------
+
+// Scan raw arguments for --list-devices or --device.
+// Returns -1 when neither flag is present (normal launch flow continues).
+// Returns >= 0 to exit with that return code.
+static int HandleDeviceCommands() {
+  const std::vector<std::wstring> rawArgs = GetRawArgs();
+
+  bool listDevices  = false;
+  bool selectDevice = false;
+  std::wstring dbPathArg;
+
+  for (size_t i = 0; i < rawArgs.size(); i++) {
+    if (rawArgs[i] == L"--list-devices") {
+      listDevices = true;
+    } else if (rawArgs[i] == L"--device") {
+      selectDevice = true;
+    } else if (rawArgs[i] == L"--db" && i + 1 < rawArgs.size()) {
+      dbPathArg = rawArgs[i + 1];
+      i++;
+    }
+  }
+
+  if (!listDevices && !selectDevice) {
+    return -1; // not a device command -- continue normal launch flow
+  }
+
+#if defined(HKLM_WRAPPER_CONSOLE_APP)
+  EnsureStdoutBoundToConsole();
+#endif
+
+  auto devices = EnumerateD3DDevices();
+  if (devices.empty()) {
+    ShowError(L"No D3D devices found. Is ddraw.dll available on this system?");
+    return 1;
+  }
+
+  // --list-devices: print every discovered device and exit.
+  if (listDevices) {
+    std::wstring output;
+    for (size_t j = 0; j < devices.size(); j++) {
+      const auto& dev = devices[j];
+      output += L"Device " + std::to_wstring(j) + L":\n";
+      output += L"  Name:        " + dev.name + L"\n";
+      output += L"  Description: " + dev.description + L"\n";
+      output += L"  GUID:        " + FormatGuid(dev.deviceGuid) + L"\n";
+      output += L"  Hex:         " + FormatGuidAsRegHex(dev.deviceGuid) + L"\n";
+      output += L"  TnL:         " + std::wstring(dev.hasTnL ? L"Yes" : L"No") + L"\n";
+      if (j + 1 < devices.size()) {
+        output += L"\n";
+      }
+    }
+    ShowInfo(output);
+    return 0;
+  }
+
+  // --device: pick the best device and persist its GUID as REG_BINARY.
+  const auto* best = SelectBestDevice(devices);
+  if (!best) {
+    ShowError(L"No suitable D3D device found.");
+    return 1;
+  }
+
+  const std::wstring cwd    = GetCurrentDirectoryPath();
+  const std::wstring dbPath = ResolveDbPath(dbPathArg, cwd);
+
+  LocalRegistryStore store;
+  if (!store.Open(dbPath)) {
+    ShowError(L"Failed to open DB: " + dbPath);
+    return 1;
+  }
+
+  const std::wstring keyPath = L"HKLM\\Software\\RuneBreakers\\Ragnarok";
+  const auto*  guidBytes     = reinterpret_cast<const uint8_t*>(&best->deviceGuid);
+
+  if (!store.PutValue(keyPath, L"GUIDDEVICE", REG_BINARY, guidBytes, 16)) {
+    ShowError(L"Failed to write GUIDDEVICE to the registry store.");
+    return 1;
+  }
+
+  std::wstring msg =
+      L"Selected device: " + best->description + L"\n"
+      L"  Name: " + best->name + L"\n"
+      L"  GUID: " + FormatGuid(best->deviceGuid) + L"\n"
+      L"  Hex:  " + FormatGuidAsRegHex(best->deviceGuid) + L"\n"
+      L"  TnL:  " + std::wstring(best->hasTnL ? L"Yes" : L"No") + L"\n"
+      L"Saved to: " + dbPath;
+  ShowInfo(msg);
+  return 0;
+}
+
+// --------------------------------------------------------------------------
+
 static std::wstring DefaultWorkingDirForTarget(const std::wstring& targetExe) {
   if (std::wstring(HKLM_WRAPPER_WORKING_DIR).empty()) {
     return GetDirectoryName(targetExe);
@@ -559,6 +664,15 @@ int wmain() {
 #else
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 #endif
+  // Handle --list-devices / --device early (these exit without launching a
+  // target process).
+  {
+    int deviceResult = HandleDeviceCommands();
+    if (deviceResult >= 0) {
+      return deviceResult;
+    }
+  }
+
   std::wstring targetExe;
   std::vector<std::wstring> args;
   std::wstring debugApisCsv;
