@@ -248,6 +248,24 @@ CREATE INDEX idx_values_key ON values_tbl(key_path);
 
 Deletes are modeled as tombstones (`is_deleted=1`) rather than hard row removal.
 
+### Case-insensitive key and value paths
+
+Registry key paths and value names are **case-insensitive** in the Windows registry, and TwinShim follows the same convention. The store layer uses `COLLATE NOCASE` for all lookups, so reads work regardless of the casing you use.
+
+However, the underlying SQLite `PRIMARY KEY` columns use case-**sensitive** comparison by default. The store normalizes key-path casing internally (new values inherit the `key_path` spelling established by the first `PutKey` call for that logical key), but if you write directly to the database you must take care to use **consistent casing** for `key_path` across both tables.
+
+Inconsistent casing (e.g. `HKLM\Software\App` in one row and `HKLM\SOFTWARE\App` in another) will not break reads, but may produce unexpected ordering in `.reg` exports.
+
+**Best practice when writing SQL directly:** query the existing `key_path` spelling first, then use that exact form for all subsequent operations on the same key:
+
+```sql
+-- Find the canonical spelling already in the keys table:
+SELECT key_path FROM keys
+WHERE key_path = 'HKLM\Software\MyApp' COLLATE NOCASE;
+
+-- Use that exact spelling for all INSERT/UPDATE operations on values_tbl.
+```
+
 ## Direct SQLite examples
 
 Examples below use the `sqlite3` CLI directly.

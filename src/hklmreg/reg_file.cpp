@@ -214,8 +214,17 @@ static std::wstring FormatRegLine(const std::wstring& valueName, uint32_t type, 
 
 std::wstring BuildRegExportContent(const std::vector<LocalRegistryStore::ExportRow>& rows, const std::wstring& prefix) {
   std::wstring content = L"Windows Registry Editor Version 5.00\r\n\r\n";
+
+  // Filter and sort rows by key path to ensure all values for a key are grouped.
+  std::vector<LocalRegistryStore::ExportRow> filtered = rows;
+  std::sort(filtered.begin(), filtered.end(), [](const auto& a, const auto& b) {
+    if (a.keyPath != b.keyPath) return a.keyPath < b.keyPath;
+    if (a.isKeyOnly != b.isKeyOnly) return a.isKeyOnly > b.isKeyOnly; // key-only rows first
+    return a.valueName < b.valueName;
+  });
+
   std::wstring currentKey;
-  for (const auto& r : rows) {
+  for (const auto& r : filtered) {
     if (!prefix.empty()) {
       if (r.keyPath.rfind(prefix, 0) != 0) {
         continue;

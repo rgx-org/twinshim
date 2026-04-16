@@ -213,6 +213,107 @@ TEST_CASE("LocalRegistryStore treats parent keys with visible descendants as exi
   CHECK_FALSE(store.KeyExistsLocally(parentKey));
 }
 
+TEST_CASE("PutValue normalizes key_path to canonical casing from keys table", "[store]") {
+  LocalRegistryStore store;
+  const std::wstring dbPath = MakeTempDbPath();
+  REQUIRE(store.Open(dbPath));
+
+  const std::wstring key1 = L"HKLM\\Software\\CaseTest";
+  const std::wstring key2 = L"HKLM\\SOFTWARE\\CaseTest";
+  const uint8_t byteA = 0xAA;
+  const uint8_t byteB = 0xBB;
+
+  // First write establishes the canonical casing.
+  REQUIRE(store.PutValue(key1, L"Alpha", REG_BINARY, &byteA, 1));
+  // Second write uses different casing but should normalize to key1's casing.
+  REQUIRE(store.PutValue(key2, L"Beta", REG_BINARY, &byteB, 1));
+
+  const auto rows = store.ExportAll();
+  int keyOnlyCount = 0;
+  bool hasAlpha = false, hasBeta = false;
+  std::wstring exportedKeyPath;
+  for (const auto& r : rows) {
+    // Case-insensitive match for our key.
+    bool isOurKey = false;
+    if (r.keyPath.size() == key1.size()) {
+      isOurKey = true;
+      for (size_t i = 0; i < r.keyPath.size(); i++) {
+        if ((wchar_t)towlower(r.keyPath[i]) != (wchar_t)towlower(key1[i])) {
+          isOurKey = false;
+          break;
+        }
+      }
+    }
+    if (!isOurKey) continue;
+
+    if (r.isKeyOnly) {
+      keyOnlyCount++;
+      exportedKeyPath = r.keyPath;
+    }
+    if (!r.isKeyOnly && r.valueName == L"Alpha") hasAlpha = true;
+    if (!r.isKeyOnly && r.valueName == L"Beta") hasBeta = true;
+  }
+  // Key should appear exactly once.
+  CHECK(keyOnlyCount == 1);
+  // Both values should be present under the same key.
+  CHECK(hasAlpha);
+  CHECK(hasBeta);
+  // The canonical casing should be the first-inserted form.
+  CHECK(exportedKeyPath == key1);
+}
+
+TEST_CASE("ExportAll groups case-variant key paths from pre-existing DB rows", "[store]") {
+  const std::wstring dbPath = MakeTempDbPath();
+
+  // Create the store and one value normally.
+  {
+    LocalRegistryStore store;
+    REQUIRE(store.Open(dbPath));
+    const std::wstring key = L"HKLM\\Software\\RawTest";
+    const uint8_t byteA = 0xAA;
+    REQUIRE(store.PutValue(key, L"Normal", REG_BINARY, &byteA, 1));
+  }
+
+  // Inject a row with different key_path casing directly via SQLite,
+  // simulating pre-fix data or external DB manipulation.
+  {
+    const std::string dbPathUtf8 = WideToUtf8(dbPath);
+    REQUIRE_FALSE(dbPathUtf8.empty());
+    sqlite3* rawDb = nullptr;
+    REQUIRE(sqlite3_open_v2(dbPathUtf8.c_str(), &rawDb, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+    const char* sql =
+        "INSERT INTO values_tbl(key_path, value_name, type, data, is_deleted, updated_at) "
+        "VALUES('HKLM\\SOFTWARE\\RawTest', 'Injected', 3, X'BB', 0, 9999999999);";
+    char* err = nullptr;
+    int rc = sqlite3_exec(rawDb, sql, nullptr, nullptr, &err);
+    if (err) sqlite3_free(err);
+    REQUIRE(rc == SQLITE_OK);
+    sqlite3_close(rawDb);
+  }
+
+  // Re-open store and export.
+  LocalRegistryStore store;
+  REQUIRE(store.Open(dbPath));
+  const auto rows = store.ExportAll();
+
+  int keyOnlyCount = 0;
+  bool hasNormal = false, hasInjected = false;
+  for (const auto& r : rows) {
+    // Case-insensitive match for our key.
+    std::wstring lower = r.keyPath;
+    for (auto& ch : lower) ch = (wchar_t)towlower(ch);
+    if (lower != L"hklm\\software\\rawtest") continue;
+
+    if (r.isKeyOnly) keyOnlyCount++;
+    if (!r.isKeyOnly && r.valueName == L"Normal") hasNormal = true;
+    if (!r.isKeyOnly && r.valueName == L"Injected") hasInjected = true;
+  }
+  // Even though key_path has different casings in the DB, ExportAll should group them.
+  CHECK(keyOnlyCount == 1);
+  CHECK(hasNormal);
+  CHECK(hasInjected);
+}
+
 TEST_CASE("LocalRegistryStore WAL changes are visible across concurrent opens", "[store][wal]") {
   const std::wstring dbPath = MakeTempDbPath();
 

@@ -388,6 +388,29 @@ bool LocalRegistryStore::KeyExistsLocally(const std::wstring& keyPath) {
   return !ListImmediateSubKeys(keyPath).empty();
 }
 
+std::wstring LocalRegistryStore::ResolveCanonicalKeyPath(const std::wstring& keyPath) {
+  if (!db_) {
+    return keyPath;
+  }
+  sqlite3_stmt* st = nullptr;
+  const char* sql = "SELECT key_path FROM keys WHERE key_path=? COLLATE NOCASE AND is_deleted=0 LIMIT 1;";
+  if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+    return keyPath;
+  }
+  if (!BindWideText(st, 1, keyPath)) {
+    sqlite3_finalize(st);
+    return keyPath;
+  }
+  int rc = sqlite3_step(st);
+  if (rc != SQLITE_ROW) {
+    sqlite3_finalize(st);
+    return keyPath;
+  }
+  std::wstring found = ColumnWideText(st, 0);
+  sqlite3_finalize(st);
+  return found.empty() ? keyPath : found;
+}
+
 bool LocalRegistryStore::PutValue(const std::wstring& keyPath,
                                  const std::wstring& valueName,
                                  uint32_t type,
@@ -397,6 +420,11 @@ bool LocalRegistryStore::PutValue(const std::wstring& keyPath,
     return false;
   }
   PutKey(keyPath);
+
+  // Resolve canonical key-path casing from the keys table so that all values
+  // under the same logical key share a single key_path spelling regardless of
+  // the casing the caller happened to use.
+  const std::wstring canonKey = ResolveCanonicalKeyPath(keyPath);
 
   const auto now = NowUnixSeconds();
 
@@ -416,7 +444,7 @@ bool LocalRegistryStore::PutValue(const std::wstring& keyPath,
       sqlite3_bind_null(st, 2);
     }
     sqlite3_bind_int64(st, 3, now);
-    if (!BindWideText(st, 4, keyPath) || !BindWideText(st, 5, valueName)) {
+    if (!BindWideText(st, 4, canonKey) || !BindWideText(st, 5, valueName)) {
       sqlite3_finalize(st);
       return false;
     }
@@ -438,7 +466,7 @@ bool LocalRegistryStore::PutValue(const std::wstring& keyPath,
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     return false;
   }
-  if (!BindWideText(st, 1, keyPath) || !BindWideText(st, 2, valueName)) {
+  if (!BindWideText(st, 1, canonKey) || !BindWideText(st, 2, valueName)) {
     sqlite3_finalize(st);
     return false;
   }
@@ -460,6 +488,8 @@ bool LocalRegistryStore::DeleteValue(const std::wstring& keyPath, const std::wst
   }
   PutKey(keyPath);
 
+  const std::wstring canonKey = ResolveCanonicalKeyPath(keyPath);
+
   const auto now = NowUnixSeconds();
 
   // Update any existing row matching case-insensitively; only insert if nothing matches.
@@ -470,7 +500,7 @@ bool LocalRegistryStore::DeleteValue(const std::wstring& keyPath, const std::wst
       return false;
     }
     sqlite3_bind_int64(st, 1, now);
-    if (!BindWideText(st, 2, keyPath) || !BindWideText(st, 3, valueName)) {
+    if (!BindWideText(st, 2, canonKey) || !BindWideText(st, 3, valueName)) {
       sqlite3_finalize(st);
       return false;
     }
@@ -491,7 +521,7 @@ bool LocalRegistryStore::DeleteValue(const std::wstring& keyPath, const std::wst
   if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
     return false;
   }
-  if (!BindWideText(st, 1, keyPath) || !BindWideText(st, 2, valueName)) {
+  if (!BindWideText(st, 1, canonKey) || !BindWideText(st, 2, valueName)) {
     sqlite3_finalize(st);
     return false;
   }
@@ -653,13 +683,19 @@ std::vector<LocalRegistryStore::ExportRow> LocalRegistryStore::ExportAll() {
     return rows;
   }
 
-  // Gather values.
+  // Gather values, grouping by case-folded key path so that rows stored under
+  // different casings of the same logical key are merged into a single group.
   struct ValueExport {
     std::wstring valueName;
     uint32_t type = 0;
     std::vector<uint8_t> data;
   };
-  std::map<std::wstring, std::vector<ValueExport>> valuesByKey;
+  struct KeyGroup {
+    std::wstring displayPath;                // first-seen casing for display
+    std::vector<ValueExport> values;
+    std::set<std::wstring> seenValueNames;   // case-folded, for dedup
+  };
+  std::map<std::wstring, KeyGroup> valuesByKey; // case-folded key -> group
   {
     sqlite3_stmt* st = nullptr;
     const char* sql = "SELECT key_path, value_name, type, data FROM values_tbl WHERE is_deleted=0 ORDER BY key_path, value_name;";
@@ -678,14 +714,24 @@ std::vector<LocalRegistryStore::ExportRow> LocalRegistryStore::ExportAll() {
         std::memcpy(v.data.data(), blob, (size_t)blobSize);
       }
       if (!keyPath.empty()) {
-        valuesByKey[std::move(keyPath)].push_back(std::move(v));
+        const std::wstring folded = CaseFoldWide(keyPath);
+        auto& group = valuesByKey[folded];
+        if (group.displayPath.empty()) {
+          group.displayPath = keyPath;
+        }
+        // Deduplicate by case-folded value name (defense against inconsistent DB rows).
+        const std::wstring vFolded = CaseFoldWide(v.valueName);
+        if (group.seenValueNames.insert(vFolded).second) {
+          group.values.push_back(std::move(v));
+        }
       }
     }
     sqlite3_finalize(st);
   }
 
-  // Gather explicitly-created keys.
-  std::set<std::wstring> keys;
+  // Gather explicitly-created keys, keyed by case-folded path.
+  // Prefer the keys-table spelling over values-table spelling for display.
+  std::map<std::wstring, std::wstring> keys; // case-folded -> display path
   {
     sqlite3_stmt* st = nullptr;
     const char* sql = "SELECT key_path FROM keys WHERE is_deleted=0 ORDER BY key_path;";
@@ -695,7 +741,10 @@ std::vector<LocalRegistryStore::ExportRow> LocalRegistryStore::ExportAll() {
     while (sqlite3_step(st) == SQLITE_ROW) {
       std::wstring keyPath = ColumnWideText(st, 0);
       if (!keyPath.empty()) {
-        keys.insert(std::move(keyPath));
+        const std::wstring folded = CaseFoldWide(keyPath);
+        if (keys.find(folded) == keys.end()) {
+          keys[folded] = std::move(keyPath);
+        }
       }
     }
     sqlite3_finalize(st);
@@ -703,26 +752,28 @@ std::vector<LocalRegistryStore::ExportRow> LocalRegistryStore::ExportAll() {
 
   // Include any keys present only via values (for backward compatibility).
   for (const auto& kv : valuesByKey) {
-    keys.insert(kv.first);
+    if (keys.find(kv.first) == keys.end()) {
+      keys[kv.first] = kv.second.displayPath;
+    }
   }
 
   // Emit one key header row per key, followed by its values.
-  for (const auto& keyPath : keys) {
-    if (IsKeyDeleted(keyPath)) {
+  for (const auto& [folded, displayPath] : keys) {
+    if (IsKeyDeleted(displayPath)) {
       continue;
     }
     ExportRow keyOnly;
-    keyOnly.keyPath = keyPath;
+    keyOnly.keyPath = displayPath;
     keyOnly.isKeyOnly = true;
     rows.push_back(std::move(keyOnly));
 
-    auto it = valuesByKey.find(keyPath);
+    auto it = valuesByKey.find(folded);
     if (it == valuesByKey.end()) {
       continue;
     }
-    for (const auto& v : it->second) {
+    for (const auto& v : it->second.values) {
       ExportRow r;
-      r.keyPath = keyPath;
+      r.keyPath = displayPath;
       r.valueName = v.valueName;
       r.type = v.type;
       r.data = v.data;

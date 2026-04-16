@@ -58,6 +58,8 @@ private:
   bool Exec(const char* sql);
   bool PrepareAndStep(const char* sql);
 
+  std::wstring ResolveCanonicalKeyPath(const std::wstring& keyPath);
+
   sqlite3* db_ = nullptr;
 };
 
