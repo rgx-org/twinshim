@@ -40,6 +40,22 @@ static bool StartsWithNoCase(const std::wstring& s, const std::wstring& prefix) 
   return true;
 }
 
+// Normalize the long-form prefix HKEY_LOCAL_MACHINE to the short HKLM form
+// used throughout TwinShim.  External tools (e.g. patch-client) may write
+// rows using the long form; canonicalizing here keeps every DB path under
+// a single spelling so that PRIMARY KEY constraints and COLLATE NOCASE
+// queries match correctly.
+static std::wstring NormalizeHivePrefix(const std::wstring& keyPath) {
+  // "HKEY_LOCAL_MACHINE" is 18 characters.
+  if (keyPath.size() >= 19 && StartsWithNoCase(keyPath, L"HKEY_LOCAL_MACHINE\\")) {
+    return L"HKLM\\" + keyPath.substr(19);
+  }
+  if (keyPath.size() == 18 && StartsWithNoCase(keyPath, L"HKEY_LOCAL_MACHINE")) {
+    return L"HKLM";
+  }
+  return keyPath;
+}
+
 static bool BindWideText(sqlite3_stmt* st, int index1, const std::wstring& text) {
   std::string utf8 = WideToUtf8(text);
   if (!text.empty() && utf8.empty()) {
@@ -140,11 +156,12 @@ bool LocalRegistryStore::EnsureSchema() {
          Exec("CREATE INDEX IF NOT EXISTS idx_values_key ON values_tbl(key_path);");
 }
 
-bool LocalRegistryStore::PutKey(const std::wstring& keyPath) {
+bool LocalRegistryStore::PutKey(const std::wstring& keyPathRaw) {
   if (!db_) {
     return false;
   }
 
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
   const auto now = NowUnixSeconds();
 
   // Registry keys are case-insensitive. Prefer updating any existing row that
@@ -215,10 +232,12 @@ bool LocalRegistryStore::PutKey(const std::wstring& keyPath) {
   return true;
 }
 
-bool LocalRegistryStore::DeleteKeyTree(const std::wstring& keyPath) {
+bool LocalRegistryStore::DeleteKeyTree(const std::wstring& keyPathRaw) {
   if (!db_) {
     return false;
   }
+
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
 
   Exec("BEGIN IMMEDIATE;");
 
@@ -312,10 +331,11 @@ static std::vector<std::wstring> KeyPrefixes(const std::wstring& keyPath) {
   return out;
 }
 
-bool LocalRegistryStore::IsKeyDeleted(const std::wstring& keyPath) {
+bool LocalRegistryStore::IsKeyDeleted(const std::wstring& keyPathRaw) {
   if (!db_) {
     return false;
   }
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
   for (const auto& p : KeyPrefixes(keyPath)) {
     sqlite3_stmt* st = nullptr;
     const char* sql = "SELECT MAX(is_deleted) FROM keys WHERE key_path=? COLLATE NOCASE;";
@@ -340,10 +360,11 @@ bool LocalRegistryStore::IsKeyDeleted(const std::wstring& keyPath) {
   return false;
 }
 
-bool LocalRegistryStore::KeyExistsLocally(const std::wstring& keyPath) {
+bool LocalRegistryStore::KeyExistsLocally(const std::wstring& keyPathRaw) {
   if (!db_) {
     return false;
   }
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
   if (IsKeyDeleted(keyPath)) {
     return false;
   }
@@ -388,7 +409,8 @@ bool LocalRegistryStore::KeyExistsLocally(const std::wstring& keyPath) {
   return !ListImmediateSubKeys(keyPath).empty();
 }
 
-std::wstring LocalRegistryStore::ResolveCanonicalKeyPath(const std::wstring& keyPath) {
+std::wstring LocalRegistryStore::ResolveCanonicalKeyPath(const std::wstring& keyPathRaw) {
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
   if (!db_) {
     return keyPath;
   }
@@ -411,7 +433,7 @@ std::wstring LocalRegistryStore::ResolveCanonicalKeyPath(const std::wstring& key
   return found.empty() ? keyPath : found;
 }
 
-bool LocalRegistryStore::PutValue(const std::wstring& keyPath,
+bool LocalRegistryStore::PutValue(const std::wstring& keyPathRaw,
                                  const std::wstring& valueName,
                                  uint32_t type,
                                  const void* data,
@@ -419,6 +441,7 @@ bool LocalRegistryStore::PutValue(const std::wstring& keyPath,
   if (!db_) {
     return false;
   }
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
   PutKey(keyPath);
 
   // Resolve canonical key-path casing from the keys table so that all values
@@ -482,10 +505,11 @@ bool LocalRegistryStore::PutValue(const std::wstring& keyPath,
   return rc == SQLITE_DONE;
 }
 
-bool LocalRegistryStore::DeleteValue(const std::wstring& keyPath, const std::wstring& valueName) {
+bool LocalRegistryStore::DeleteValue(const std::wstring& keyPathRaw, const std::wstring& valueName) {
   if (!db_) {
     return false;
   }
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
   PutKey(keyPath);
 
   const std::wstring canonKey = ResolveCanonicalKeyPath(keyPath);
@@ -531,10 +555,11 @@ bool LocalRegistryStore::DeleteValue(const std::wstring& keyPath, const std::wst
   return rc == SQLITE_DONE;
 }
 
-std::optional<StoredValue> LocalRegistryStore::GetValue(const std::wstring& keyPath, const std::wstring& valueName) {
+std::optional<StoredValue> LocalRegistryStore::GetValue(const std::wstring& keyPathRaw, const std::wstring& valueName) {
   if (!db_) {
     return std::nullopt;
   }
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
   if (IsKeyDeleted(keyPath)) {
     StoredValue tombstone;
     tombstone.isDeleted = true;
@@ -571,11 +596,12 @@ std::optional<StoredValue> LocalRegistryStore::GetValue(const std::wstring& keyP
   return v;
 }
 
-std::vector<LocalRegistryStore::ValueRow> LocalRegistryStore::ListValues(const std::wstring& keyPath) {
+std::vector<LocalRegistryStore::ValueRow> LocalRegistryStore::ListValues(const std::wstring& keyPathRaw) {
   std::vector<ValueRow> rows;
   if (!db_) {
     return rows;
   }
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
   if (IsKeyDeleted(keyPath)) {
     return rows;
   }
@@ -619,11 +645,12 @@ std::vector<LocalRegistryStore::ValueRow> LocalRegistryStore::ListValues(const s
   return rows;
 }
 
-std::vector<std::wstring> LocalRegistryStore::ListImmediateSubKeys(const std::wstring& keyPath) {
+std::vector<std::wstring> LocalRegistryStore::ListImmediateSubKeys(const std::wstring& keyPathRaw) {
   std::vector<std::wstring> subkeys;
   if (!db_) {
     return subkeys;
   }
+  const std::wstring keyPath = NormalizeHivePrefix(keyPathRaw);
   if (IsKeyDeleted(keyPath)) {
     return subkeys;
   }
@@ -706,7 +733,7 @@ std::vector<LocalRegistryStore::ExportRow> LocalRegistryStore::ExportAll() {
       ValueExport v;
       const void* blob = sqlite3_column_blob(st, 3);
       int blobSize = sqlite3_column_bytes(st, 3);
-      std::wstring keyPath = ColumnWideText(st, 0);
+      std::wstring keyPath = NormalizeHivePrefix(ColumnWideText(st, 0));
       v.valueName = ColumnWideText(st, 1);
       v.type = (uint32_t)sqlite3_column_int(st, 2);
       if (blob && blobSize > 0) {
@@ -739,7 +766,7 @@ std::vector<LocalRegistryStore::ExportRow> LocalRegistryStore::ExportAll() {
       return rows;
     }
     while (sqlite3_step(st) == SQLITE_ROW) {
-      std::wstring keyPath = ColumnWideText(st, 0);
+      std::wstring keyPath = NormalizeHivePrefix(ColumnWideText(st, 0));
       if (!keyPath.empty()) {
         const std::wstring folded = CaseFoldWide(keyPath);
         if (keys.find(folded) == keys.end()) {
