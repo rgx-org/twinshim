@@ -149,9 +149,12 @@ static std::wstring BuildUsageMessage() {
   return L"Usage:\n"
          L"  " + exe + L" [--db <path>] [--debug <api1,api2,...|all>] [--readthrough] [--scale <1.1-100>] [--scale-method <point|bilinear|bicubic|cr|catmull-rom|lanczos|lanczos3|pixfast>] <target_exe> [target arguments...]\n"
          L"  " + exe + L" [--db <path>] --list-devices\n"
+         L"  " + exe + L" [--db <path>] --json-devices\n"
          L"  " + exe + L" [--db <path>] --device\n\n"
          L"Device options:\n"
          L"  --list-devices  Enumerate all D3D devices via ddraw.dll and print their GUIDs.\n"
+         L"  --json-devices  Same as --list-devices but output as a JSON array for\n"
+         L"                  programmatic consumption.\n"
          L"  --device        Select the best TnL-capable device and save its GUID to the\n"
          L"                  HKLM registry store under Software\\RuneBreakers\\Ragnarok.\n\n"
          L"Examples:\n"
@@ -161,6 +164,7 @@ static std::wstring BuildUsageMessage() {
          L"  " + exe + L" --debug RegOpenKey,RegQueryValue C:\\Apps\\TargetApp.exe\n"
          L"  " + exe + L" C:\\Apps\\TargetApp.exe --mode test --config \"C:\\path with spaces\\cfg.json\"\n"
          L"  " + exe + L" --list-devices\n"
+         L"  " + exe + L" --json-devices\n"
          L"  " + exe + L" --db .\\HKLM.sqlite --device";
 }
 
@@ -485,19 +489,65 @@ struct DebugPipeBridge {
 // --list-devices / --device  (D3D device enumeration via ddraw.dll)
 // --------------------------------------------------------------------------
 
-// Scan raw arguments for --list-devices or --device.
-// Returns -1 when neither flag is present (normal launch flow continues).
+// Convert a wide string to a narrow UTF-8 string.
+static std::string WideToUtf8(const std::wstring& wide) {
+  if (wide.empty()) {
+    return {};
+  }
+  int needed = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()),
+                                   nullptr, 0, nullptr, nullptr);
+  if (needed <= 0) {
+    return {};
+  }
+  std::string out(static_cast<size_t>(needed), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()),
+                      out.data(), needed, nullptr, nullptr);
+  return out;
+}
+
+// Escape a string for inclusion as a JSON string value (without surrounding quotes).
+static std::string JsonEscape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char ch : s) {
+    switch (ch) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\b': out += "\\b";  break;
+      case '\f': out += "\\f";  break;
+      case '\n': out += "\\n";  break;
+      case '\r': out += "\\r";  break;
+      case '\t': out += "\\t";  break;
+      default:
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(ch));
+          out += buf;
+        } else {
+          out += ch;
+        }
+        break;
+    }
+  }
+  return out;
+}
+
+// Scan raw arguments for --list-devices, --json-devices, or --device.
+// Returns -1 when none of these flags are present (normal launch flow continues).
 // Returns >= 0 to exit with that return code.
 static int HandleDeviceCommands() {
   const std::vector<std::wstring> rawArgs = GetRawArgs();
 
   bool listDevices  = false;
+  bool jsonDevices  = false;
   bool selectDevice = false;
   std::wstring dbPathArg;
 
   for (size_t i = 0; i < rawArgs.size(); i++) {
     if (rawArgs[i] == L"--list-devices") {
       listDevices = true;
+    } else if (rawArgs[i] == L"--json-devices") {
+      jsonDevices = true;
     } else if (rawArgs[i] == L"--device") {
       selectDevice = true;
     } else if (rawArgs[i] == L"--db" && i + 1 < rawArgs.size()) {
@@ -506,7 +556,7 @@ static int HandleDeviceCommands() {
     }
   }
 
-  if (!listDevices && !selectDevice) {
+  if (!listDevices && !jsonDevices && !selectDevice) {
     return -1; // not a device command -- continue normal launch flow
   }
 
@@ -518,6 +568,46 @@ static int HandleDeviceCommands() {
   if (devices.empty()) {
     ShowError(L"No D3D devices found. Is ddraw.dll available on this system?");
     return 1;
+  }
+
+  // --json-devices: print every discovered device as a JSON array and exit.
+  if (jsonDevices) {
+#if defined(HKLM_WRAPPER_CONSOLE_APP)
+    std::string json = "[\n";
+    for (size_t j = 0; j < devices.size(); j++) {
+      const auto& dev = devices[j];
+      const std::string name   = JsonEscape(WideToUtf8(dev.name));
+      const std::string desc   = JsonEscape(WideToUtf8(dev.description));
+      const std::string guid   = JsonEscape(WideToUtf8(FormatGuid(dev.deviceGuid)));
+      const std::string hex    = JsonEscape(WideToUtf8(FormatGuidAsRegHex(dev.deviceGuid)));
+      const std::string tnl    = dev.hasTnL ? "true" : "false";
+
+      char devCapsBuf[16];
+      snprintf(devCapsBuf, sizeof(devCapsBuf), "0x%08lx", static_cast<unsigned long>(dev.dwDevCaps));
+
+      json += "  {\n";
+      json += "    \"index\": "       + std::to_string(j) + ",\n";
+      json += "    \"name\": \""      + name + "\",\n";
+      json += "    \"description\": \"" + desc + "\",\n";
+      json += "    \"guid\": \""      + guid + "\",\n";
+      json += "    \"hex\": \""       + hex + "\",\n";
+      json += "    \"tnl\": "         + tnl + ",\n";
+      json += "    \"devCaps\": \""   + std::string(devCapsBuf) + "\"\n";
+      json += "  }";
+      if (j + 1 < devices.size()) {
+        json += ",";
+      }
+      json += "\n";
+    }
+    json += "]\n";
+    fprintf(stdout, "%s", json.c_str());
+    fflush(stdout);
+#else
+    // GUI build: JSON is only supported from the console build.
+    ShowError(L"--json-devices is only supported in the console (CLI) build.");
+    return 1;
+#endif
+    return 0;
   }
 
   // --list-devices: print every discovered device and exit.
