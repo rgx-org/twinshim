@@ -259,6 +259,13 @@ static bool TryGetPrimaryScaledWindowInfo(ScaledWindowInfo* outInfo, RECT* outCl
 
 // Fallback for scaling implementations that resize the window but don't explicitly
 // register src/dst sizes with the shim (e.g. dgVoodoo AddOn path).
+//
+// This inference divides the current client size by the configured scale factor to
+// derive the logical (pre-scale) dimensions.  It is only valid when an external
+// scaler (dgVoodoo) has actually enlarged the window.  We gate on the addon-ready
+// signal so that inference only engages after the addon has confirmed it is loaded
+// and actively scaling; without this, missing dgVoodoo DLLs would cause incorrect
+// cursor mapping against an unscaled window.
 static bool TryInferScaledWindow(HWND hwnd, ScaledWindowInfo* out) {
   if (out) {
     *out = ScaledWindowInfo{};
@@ -269,6 +276,15 @@ static bool TryInferScaledWindow(HWND hwnd, ScaledWindowInfo* out) {
 
   const SurfaceScaleConfig& cfg = GetSurfaceScaleConfig();
   if (!cfg.enabled || !cfg.scaleValid || !(cfg.factor > 1.0)) {
+    return false;
+  }
+
+  // Only infer when an external addon (dgVoodoo) has signalled that it is
+  // loaded and actively performing scaling.  Without this gate, a missing
+  // dgVoodoo installation would cause us to divide an unscaled client size
+  // by the scale factor, producing wrong source dimensions and broken
+  // cursor positioning.
+  if (!IsAddonReady()) {
     return false;
   }
 

@@ -27,4 +27,11 @@ bool TryGetScaledWindow(HWND hwnd, ScaledWindowInfo* out);
 // Clears all registered windows (best-effort teardown).
 void ClearScaledWindows();
 
+// Signalled by the dgVoodoo addon (or any external scaler) once it has
+// initialized and is actively scaling.  The mouse-hook inference fallback
+// (TryInferScaledWindow) gates on this flag so that cursor remapping only
+// engages when an external scaler is actually present.
+void NotifyAddonReady();
+bool IsAddonReady();
+
 } // namespace twinshim

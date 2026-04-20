@@ -193,6 +193,21 @@ void ClearScaledWindows() {
   }
 }
 
+static std::atomic<bool> g_addonReady{false};
+
+void NotifyAddonReady() {
+  bool expected = false;
+  if (g_addonReady.compare_exchange_strong(expected, true)) {
+    if (IsMouseDebugEnabled()) {
+      Tracef("addon ready signalled");
+    }
+  }
+}
+
+bool IsAddonReady() {
+  return g_addonReady.load(std::memory_order_acquire);
+}
+
 extern "C" {
 
 __declspec(dllexport) void WINAPI TwinShim_RegisterScaledWindow(HWND hwnd, int srcW, int srcH, int dstW, int dstH, double scaleFactor) {
@@ -201,6 +216,10 @@ __declspec(dllexport) void WINAPI TwinShim_RegisterScaledWindow(HWND hwnd, int s
 
 __declspec(dllexport) void WINAPI TwinShim_UnregisterScaledWindow(HWND hwnd) {
   twinshim::UnregisterScaledWindow(hwnd);
+}
+
+__declspec(dllexport) void WINAPI TwinShim_NotifyAddonReady() {
+  twinshim::NotifyAddonReady();
 }
 
 }
