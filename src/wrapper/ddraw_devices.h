@@ -7,7 +7,6 @@
 
 #include <windows.h>
 
-#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -15,10 +14,7 @@ namespace twinshim {
 
 struct D3DDeviceInfo {
   std::wstring name;
-  std::wstring description;
   GUID deviceGuid;
-  uint32_t dwDevCaps;
-  bool hasTnL;
 };
 
 // Enumerate D3D7 devices by dynamically loading ddraw.dll and walking
@@ -34,7 +30,7 @@ std::wstring FormatGuid(const GUID& guid);
 std::wstring FormatGuidAsRegHex(const GUID& guid);
 
 // Pick the most appropriate device from the enumerated list.
-// Preference order: TnL HAL > HAL > first available.
+// Preference order: hardware (non-RGB, non-Reference) > first available.
 // Returns nullptr when the list is empty.
 const D3DDeviceInfo* SelectBestDevice(const std::vector<D3DDeviceInfo>& devices);
 

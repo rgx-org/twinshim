@@ -34,12 +34,6 @@ static const GUID kGUID_RefDevice =
     {0x50936643, 0x13e9, 0x11d1, {0x89, 0xaa, 0x00, 0xa0, 0xc9, 0x05, 0x41, 0x29}};
 
 // =========================================================================
-// D3D7 device-caps flag we care about
-// =========================================================================
-
-static constexpr DWORD kD3DDEVCAPS_HWTRANSFORMANDLIGHT = 0x00010000;
-
-// =========================================================================
 // Minimal D3D7 structure stubs (avoids a hard dependency on <d3d.h> which
 // may not ship in every MinGW / Windows SDK configuration)
 // =========================================================================
@@ -128,6 +122,29 @@ static std::wstring AnsiToWide(const char* ansi) {
 // EnumDevices callback
 // =========================================================================
 
+// Strip capability qualifiers like "T&L" from device names so that e.g.
+// "Direct3D T&L HAL" becomes "Direct3D HAL".
+static std::wstring SimplifyDeviceName(const std::wstring& name) {
+  std::wstring out = name;
+
+  // Remove common capability prefixes/infixes.
+  const wchar_t* patterns[] = {L"T&L ", L"TnL ", L"T&L", L"TnL"};
+  for (const auto* pat : patterns) {
+    size_t pos = out.find(pat);
+    if (pos != std::wstring::npos) {
+      out.erase(pos, wcslen(pat));
+    }
+  }
+
+  // Collapse any resulting double spaces.
+  size_t pos;
+  while ((pos = out.find(L"  ")) != std::wstring::npos) {
+    out.erase(pos, 1);
+  }
+
+  return out;
+}
+
 static HRESULT CALLBACK DeviceEnumCallback(
     LPSTR                lpDeviceDescription,
     LPSTR                lpDeviceName,
@@ -136,17 +153,19 @@ static HRESULT CALLBACK DeviceEnumCallback(
   auto* devices = static_cast<std::vector<D3DDeviceInfo>*>(lpContext);
 
   D3DDeviceInfo info;
-  info.name        = AnsiToWide(lpDeviceName);
-  info.description = AnsiToWide(lpDeviceDescription);
+  info.name = SimplifyDeviceName(AnsiToWide(lpDeviceName));
 
   if (lpD3DDeviceDesc) {
     info.deviceGuid = lpD3DDeviceDesc->deviceGUID;
-    info.dwDevCaps  = lpD3DDeviceDesc->dwDevCaps;
-    info.hasTnL     = (lpD3DDeviceDesc->dwDevCaps & kD3DDEVCAPS_HWTRANSFORMANDLIGHT) != 0;
   } else {
     ZeroMemory(&info.deviceGuid, sizeof(info.deviceGuid));
-    info.dwDevCaps = 0;
-    info.hasTnL    = false;
+  }
+
+  // Deduplicate: skip if we already have an entry with this GUID.
+  for (const auto& existing : *devices) {
+    if (std::memcmp(&existing.deviceGuid, &info.deviceGuid, sizeof(GUID)) == 0) {
+      return 1; // already recorded -- continue enumeration
+    }
   }
 
   devices->push_back(std::move(info));
@@ -240,14 +259,7 @@ const D3DDeviceInfo* SelectBestDevice(const std::vector<D3DDeviceInfo>& devices)
     return nullptr;
   }
 
-  // 1. Prefer a device with hardware Transform & Lighting.
-  for (const auto& dev : devices) {
-    if (dev.hasTnL) {
-      return &dev;
-    }
-  }
-
-  // 2. Fall back to a hardware device (anything that is not the software RGB
+  // 1. Prefer a hardware device (anything that is not the software RGB
   //    or reference rasteriser).
   for (const auto& dev : devices) {
     if (std::memcmp(&dev.deviceGuid, &kGUID_RGBDevice, sizeof(GUID)) != 0 &&
@@ -256,7 +268,7 @@ const D3DDeviceInfo* SelectBestDevice(const std::vector<D3DDeviceInfo>& devices)
     }
   }
 
-  // 3. Last resort: first device in the list.
+  // 2. Last resort: first device in the list.
   return &devices[0];
 }
 

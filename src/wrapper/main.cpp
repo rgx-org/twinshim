@@ -155,7 +155,7 @@ static std::wstring BuildUsageMessage() {
          L"  --list-devices  Enumerate all D3D devices via ddraw.dll and print their GUIDs.\n"
          L"  --json-devices  Same as --list-devices but output as a JSON array for\n"
          L"                  programmatic consumption.\n"
-         L"  --device        Select the best TnL-capable device and save its GUID to the\n"
+         L"  --device        Select the best hardware device and save its GUID to the\n"
          L"                  HKLM registry store under Software\\RuneBreakers\\Ragnarok.\n\n"
          L"Examples:\n"
          L"  " + exe + L" C:\\Apps\\TargetApp.exe\n"
@@ -576,23 +576,14 @@ static int HandleDeviceCommands() {
     std::string json = "[\n";
     for (size_t j = 0; j < devices.size(); j++) {
       const auto& dev = devices[j];
-      const std::string name   = JsonEscape(WideToUtf8(dev.name));
-      const std::string desc   = JsonEscape(WideToUtf8(dev.description));
-      const std::string guid   = JsonEscape(WideToUtf8(FormatGuid(dev.deviceGuid)));
-      const std::string hex    = JsonEscape(WideToUtf8(FormatGuidAsRegHex(dev.deviceGuid)));
-      const std::string tnl    = dev.hasTnL ? "true" : "false";
-
-      char devCapsBuf[16];
-      snprintf(devCapsBuf, sizeof(devCapsBuf), "0x%08lx", static_cast<unsigned long>(dev.dwDevCaps));
+      const std::string name = JsonEscape(WideToUtf8(dev.name));
+      const std::string guid = JsonEscape(WideToUtf8(FormatGuid(dev.deviceGuid)));
+      const std::string hex  = JsonEscape(WideToUtf8(FormatGuidAsRegHex(dev.deviceGuid)));
 
       json += "  {\n";
-      json += "    \"index\": "       + std::to_string(j) + ",\n";
-      json += "    \"name\": \""      + name + "\",\n";
-      json += "    \"description\": \"" + desc + "\",\n";
-      json += "    \"guid\": \""      + guid + "\",\n";
-      json += "    \"hex\": \""       + hex + "\",\n";
-      json += "    \"tnl\": "         + tnl + ",\n";
-      json += "    \"devCaps\": \""   + std::string(devCapsBuf) + "\"\n";
+      json += "    \"name\": \"" + name + "\",\n";
+      json += "    \"guid\": \"" + guid + "\",\n";
+      json += "    \"hex\": \""  + hex + "\"\n";
       json += "  }";
       if (j + 1 < devices.size()) {
         json += ",";
@@ -616,11 +607,9 @@ static int HandleDeviceCommands() {
     for (size_t j = 0; j < devices.size(); j++) {
       const auto& dev = devices[j];
       output += L"Device " + std::to_wstring(j) + L":\n";
-      output += L"  Name:        " + dev.name + L"\n";
-      output += L"  Description: " + dev.description + L"\n";
-      output += L"  GUID:        " + FormatGuid(dev.deviceGuid) + L"\n";
-      output += L"  Hex:         " + FormatGuidAsRegHex(dev.deviceGuid) + L"\n";
-      output += L"  TnL:         " + std::wstring(dev.hasTnL ? L"Yes" : L"No") + L"\n";
+      output += L"  Name: " + dev.name + L"\n";
+      output += L"  GUID: " + FormatGuid(dev.deviceGuid) + L"\n";
+      output += L"  Hex:  " + FormatGuidAsRegHex(dev.deviceGuid) + L"\n";
       if (j + 1 < devices.size()) {
         output += L"\n";
       }
@@ -654,11 +643,9 @@ static int HandleDeviceCommands() {
   }
 
   std::wstring msg =
-      L"Selected device: " + best->description + L"\n"
-      L"  Name: " + best->name + L"\n"
+      L"Selected device: " + best->name + L"\n"
       L"  GUID: " + FormatGuid(best->deviceGuid) + L"\n"
       L"  Hex:  " + FormatGuidAsRegHex(best->deviceGuid) + L"\n"
-      L"  TnL:  " + std::wstring(best->hasTnL ? L"Yes" : L"No") + L"\n"
       L"Saved to: " + dbPath;
   ShowInfo(msg);
   return 0;
