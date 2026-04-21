@@ -153,17 +153,8 @@ static HRESULT CALLBACK DeviceEnumCallback(
   auto* devices = static_cast<std::vector<D3DDeviceInfo>*>(lpContext);
 
   D3DDeviceInfo info;
+  info.name = SimplifyDeviceName(AnsiToWide(lpDeviceName));
   info.description = AnsiToWide(lpDeviceDescription);
-
-  // Build a display name that includes the driver description when it adds
-  // useful information beyond the generic device-type name (e.g. "Direct3D
-  // HAL (NVIDIA GeForce RTX 3080)" instead of just "Direct3D HAL").
-  std::wstring simpleName = SimplifyDeviceName(AnsiToWide(lpDeviceName));
-  if (!info.description.empty() && info.description != simpleName) {
-    info.name = simpleName + L" (" + info.description + L")";
-  } else {
-    info.name = simpleName;
-  }
 
   if (lpD3DDeviceDesc) {
     info.deviceGuid = lpD3DDeviceDesc->deviceGUID;
@@ -180,6 +171,120 @@ static HRESULT CALLBACK DeviceEnumCallback(
 
   devices->push_back(std::move(info));
   return 1; // DDENUMRET_OK -- continue enumeration
+}
+
+// =========================================================================
+// DXGI supplementary adapter query (dynamically loaded)
+// =========================================================================
+
+// IID_IDXGIFactory = {7B7166EC-21C7-44AE-B21A-C9AE321AE369}
+static const GUID kIID_IDXGIFactory =
+    {0x7b7166ec, 0x21c7, 0x44ae, {0xb2, 0x1a, 0xc9, 0xae, 0x32, 0x1a, 0xe3, 0x69}};
+
+// Minimal DXGI_ADAPTER_DESC stub to avoid requiring <dxgi.h>.
+struct DxgiAdapterDesc {
+  WCHAR  Description[128];
+  UINT   VendorId;
+  UINT   DeviceId;
+  UINT   SubSysId;
+  UINT   Revision;
+  SIZE_T DedicatedVideoMemory;
+  SIZE_T DedicatedSystemMemory;
+  SIZE_T SharedSystemMemory;
+  LUID   AdapterLuid;
+};
+
+typedef HRESULT(WINAPI* PFN_CreateDXGIFactory)(REFIID riid, void** ppFactory);
+
+// IDXGIFactory vtable layout (inherits IDXGIObject <- IUnknown):
+//   0-2: IUnknown   3-6: IDXGIObject   7: EnumAdapters
+typedef HRESULT(STDMETHODCALLTYPE* PFN_DXGIFactory_EnumAdapters)(
+    IUnknown* pThis, UINT Adapter, IUnknown** ppAdapter);
+
+// IDXGIAdapter vtable layout (inherits IDXGIObject <- IUnknown):
+//   0-2: IUnknown   3-6: IDXGIObject   7: EnumOutputs   8: GetDesc
+typedef HRESULT(STDMETHODCALLTYPE* PFN_DXGIAdapter_GetDesc)(
+    IUnknown* pThis, DxgiAdapterDesc* pDesc);
+
+// Query the primary display adapter description via DXGI.
+// Returns an empty string if DXGI is unavailable or enumeration fails.
+static std::wstring QueryPrimaryAdapterDescription() {
+  HMODULE hDxgi = LoadLibraryW(L"dxgi.dll");
+  if (!hDxgi) {
+    return {};
+  }
+
+  auto pfnCreate = reinterpret_cast<PFN_CreateDXGIFactory>(
+      GetProcAddress(hDxgi, "CreateDXGIFactory"));
+  if (!pfnCreate) {
+    FreeLibrary(hDxgi);
+    return {};
+  }
+
+  IUnknown* pFactory = nullptr;
+  HRESULT hr = pfnCreate(kIID_IDXGIFactory, reinterpret_cast<void**>(&pFactory));
+  if (FAILED(hr) || !pFactory) {
+    FreeLibrary(hDxgi);
+    return {};
+  }
+
+  // EnumAdapters slot 7 -- get adapter 0 (primary display).
+  auto factoryVtable = *reinterpret_cast<void***>(pFactory);
+  auto pfnEnumAdapters = reinterpret_cast<PFN_DXGIFactory_EnumAdapters>(factoryVtable[7]);
+
+  IUnknown* pAdapter = nullptr;
+  hr = pfnEnumAdapters(pFactory, 0, &pAdapter);
+  if (FAILED(hr) || !pAdapter) {
+    pFactory->Release();
+    FreeLibrary(hDxgi);
+    return {};
+  }
+
+  // GetDesc slot 8.
+  auto adapterVtable = *reinterpret_cast<void***>(pAdapter);
+  auto pfnGetDesc = reinterpret_cast<PFN_DXGIAdapter_GetDesc>(adapterVtable[8]);
+
+  DxgiAdapterDesc desc{};
+  hr = pfnGetDesc(pAdapter, &desc);
+
+  std::wstring result;
+  if (SUCCEEDED(hr)) {
+    desc.Description[127] = L'\0';
+    result = desc.Description;
+  }
+
+  pAdapter->Release();
+  pFactory->Release();
+  FreeLibrary(hDxgi);
+  return result;
+}
+
+// =========================================================================
+// Helpers for description enrichment
+// =========================================================================
+
+static bool IsHardwareDevice(const GUID& guid) {
+  return std::memcmp(&guid, &kGUID_RGBDevice, sizeof(GUID)) != 0 &&
+         std::memcmp(&guid, &kGUID_RefDevice, sizeof(GUID)) != 0;
+}
+
+// The standard Windows D3D7 driver description for hardware devices is a
+// verbose boilerplate like "Microsoft Direct3D Hardware acceleration through
+// Direct3D HAL".  When a wrapper (e.g. dgVoodoo) provides its own description,
+// it won't match this pattern and we should keep it as-is.
+static bool IsGenericD3D7Description(const std::wstring& desc) {
+  return desc.find(L"Microsoft Direct3D") == 0;
+}
+
+// Build the composite display name for a device.
+//   simpleName  = "Direct3D HAL" (the simplified device-type name)
+//   description = the best available description for parenthetical display
+static std::wstring BuildDisplayName(const std::wstring& simpleName,
+                                     const std::wstring& description) {
+  if (!description.empty() && description != simpleName) {
+    return simpleName + L" (" + description + L")";
+  }
+  return simpleName;
 }
 
 } // anonymous namespace
@@ -234,6 +339,36 @@ std::vector<D3DDeviceInfo> EnumerateD3DDevices() {
   pD3D7->Release();
   pDD7->Release();
   FreeLibrary(hDDraw);
+
+  // --- enrich device descriptions via DXGI ------------------------------
+  // D3D7 EnumDevices comes through DDraw hooks (dgVoodoo, etc.) so the
+  // device list is authoritative.  DXGI is only used as a supplementary
+  // lookup to replace the generic Microsoft boilerplate with the actual
+  // GPU model name.  For devices whose D3D7 description is already
+  // informative (e.g. dgVoodoo) or for phantom devices that have no DXGI
+  // counterpart, the D3D7 description is kept as-is.
+  bool needDxgi = false;
+  for (const auto& dev : devices) {
+    if (IsHardwareDevice(dev.deviceGuid) && IsGenericD3D7Description(dev.description)) {
+      needDxgi = true;
+      break;
+    }
+  }
+
+  std::wstring dxgiAdapterName;
+  if (needDxgi) {
+    dxgiAdapterName = QueryPrimaryAdapterDescription();
+  }
+
+  for (auto& dev : devices) {
+    if (!dxgiAdapterName.empty() &&
+        IsHardwareDevice(dev.deviceGuid) &&
+        IsGenericD3D7Description(dev.description)) {
+      // Replace the generic boilerplate with the DXGI adapter name.
+      dev.description = dxgiAdapterName;
+    }
+    dev.name = BuildDisplayName(dev.name, dev.description);
+  }
 
   return devices;
 }
