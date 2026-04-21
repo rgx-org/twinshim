@@ -239,7 +239,7 @@ static void WideToUtf8BestEffort(const std::wstring& ws, char* out, size_t outSi
 }
 
 // ---------------------------------------------------------------------------
-// Window size guard — subclasses the game window to prevent shrinking below
+// Window size guard -- subclasses the game window to prevent shrinking below
 // the scaled client size.  Some games (especially those that moved from DX7/8
 // to DX9) actively manage their window size in response to WM_SIZE and
 // immediately undo the addon's resize.  This guard intercepts

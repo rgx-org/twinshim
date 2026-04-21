@@ -436,7 +436,7 @@
     }
 
     const twinshim::SurfaceScaleMethod method = GetScaleMethod();
-    // Point sampling is handled by our PSO (psoPoint) — do NOT return false here.
+    // Point sampling is handled by our PSO (psoPoint) -- do NOT return false here.
     // Returning false would let dgVoodoo present with its default (bilinear) filtering.
 
     std::lock_guard<std::mutex> lock(mu_);
