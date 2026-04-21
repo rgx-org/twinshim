@@ -8,7 +8,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(HKLM_WRAPPER_FETCH_MINHOOK "Fetch MinHook at configure time" ON)
 option(HKLM_WRAPPER_ENABLE_TESTS "Build unit tests" ON)
 option(HKLM_WRAPPER_MSVC_STATIC_RUNTIME "Use /MT runtime for wrapper/shim on MSVC" ON)
-option(HKLM_WRAPPER_ENABLE_DGVOODOO_ADDON "Build dgVoodoo AddOn DLL (requires dgVoodoo AddOn SDK)" OFF)
+
+# Auto-detect dgVoodoo AddOn SDK so the option defaults to ON when the SDK is
+# present.  Prior to CMake 3.21, -D flags cannot be combined with --preset, so
+# relying on the build script to pass -DHKLM_WRAPPER_ENABLE_DGVOODOO_ADDON=ON
+# alongside --preset does not work on CMake 3.20.  Detecting here is reliable
+# regardless of CMake version or invocation method.
+set(_DGVOODOO_ADDON_DEFAULT OFF)
+if(MSVC
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dgvoodoo_addon_sdk/Inc/Addon/AddonDefs.hpp"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dgvoodoo_addon_sdk/Lib/x86/dgVoodooAddon.lib")
+  set(_DGVOODOO_ADDON_DEFAULT ON)
+endif()
+option(HKLM_WRAPPER_ENABLE_DGVOODOO_ADDON "Build dgVoodoo AddOn DLL (requires dgVoodoo AddOn SDK)" ${_DGVOODOO_ADDON_DEFAULT})
 
 if(MSVC AND HKLM_WRAPPER_MSVC_STATIC_RUNTIME)
   # This must be set before targets are created; targets snapshot the current

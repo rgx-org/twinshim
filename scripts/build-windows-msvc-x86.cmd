@@ -10,20 +10,25 @@ if not exist "%CMAKE_WRAPPER%" (
 
 echo [INFO] Configuring preset windows-x86-msvc-release-stage ...
 
-rem Auto-enable dgVoodoo AddOn build if the SDK is present in third_party.
+rem Informational: report whether the dgVoodoo AddOn SDK is present.
+rem CMakeLists.txt auto-detects the SDK and enables the SampleAddon target,
+rem so we no longer need to pass -D flags here (which broke on CMake < 3.21
+rem when combined with --preset).
 set "DGVOODOO_SDK_DIR=%SCRIPT_DIR%..\third_party\dgvoodoo_addon_sdk"
 set "DGVOODOO_HDR=%DGVOODOO_SDK_DIR%\Inc\Addon\AddonDefs.hpp"
 set "DGVOODOO_LIB=%DGVOODOO_SDK_DIR%\Lib\x86\dgVoodooAddon.lib"
 
-set "DGVOODOO_ADDON_FLAG="
-if exist "%DGVOODOO_HDR%" if exist "%DGVOODOO_LIB%" (
-  echo [INFO] dgVoodoo AddOn SDK detected; enabling SampleAddon.dll build
-  set "DGVOODOO_ADDON_FLAG=-DHKLM_WRAPPER_ENABLE_DGVOODOO_ADDON=ON"
+if exist "%DGVOODOO_HDR%" (
+  if exist "%DGVOODOO_LIB%" (
+    echo [INFO] dgVoodoo AddOn SDK detected; SampleAddon.dll will be built
+  ) else (
+    echo [INFO] dgVoodoo AddOn SDK incomplete ^(missing lib^); SampleAddon.dll will not be built
+  )
 ) else (
-  echo [INFO] dgVoodoo AddOn SDK not detected; SampleAddon.dll will not be built
+  echo [INFO] dgVoodoo AddOn SDK not found; SampleAddon.dll will not be built
 )
 
-call "%CMAKE_WRAPPER%" --preset windows-x86-msvc-release-stage %DGVOODOO_ADDON_FLAG%
+call "%CMAKE_WRAPPER%" --preset windows-x86-msvc-release-stage
 if errorlevel 1 exit /b %errorlevel%
 
 echo [INFO] Building preset windows-x86-msvc-release-stage ...
