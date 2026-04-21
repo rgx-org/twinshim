@@ -42,6 +42,14 @@
     const LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
     Tracef("resize styles: style=0x%08lX ex=0x%08lX", (unsigned long)style, (unsigned long)exStyle);
 
+    // Install window-size guard BEFORE the first resize.  Some DX9 games (and
+    // dgVoodoo itself) actively enforce the window size to match the back-buffer
+    // and will immediately undo our resize.  The guard subclasses the window
+    // procedure and clamps WM_WINDOWPOSCHANGING so the window cannot shrink
+    // below the desired scaled client size.
+    const bool guardOk = InstallWindowSizeGuard(hwnd, (int)dstW, (int)dstH);
+    Tracef("window size guard: %s (hwnd=%p min=%ux%u)", guardOk ? "installed" : "failed", (void*)hwnd, (unsigned)dstW, (unsigned)dstH);
+
     const bool ok = ResizeWindowClient(hwnd, (int)dstW, (int)dstH);
     const DWORD gle = GetLastError();
     int cw2 = 0, ch2 = 0;
@@ -64,7 +72,8 @@
     // Publish explicit mapping to the injected shim (if present) so mouse coordinate
     // remapping does not need to infer src/dst sizes.
     {
-      using RegisterFn = void(WINAPI*)(HWND, int, int, int, int, double);
+      // The shim exports use __cdecl (not WINAPI/stdcall) to avoid name decoration.
+      using RegisterFn = void(*)(HWND, int, int, int, int, double);
       HMODULE hShim = GetModuleHandleW(L"twinshim_shim.dll");
       if (!hShim) {
         hShim = GetModuleHandleW(L"twinshim_shim");

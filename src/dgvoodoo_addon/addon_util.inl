@@ -238,6 +238,112 @@ static void WideToUtf8BestEffort(const std::wstring& ws, char* out, size_t outSi
   out[n] = '\0';
 }
 
+// ---------------------------------------------------------------------------
+// Window size guard — subclasses the game window to prevent shrinking below
+// the scaled client size.  Some games (especially those that moved from DX7/8
+// to DX9) actively manage their window size in response to WM_SIZE and
+// immediately undo the addon's resize.  This guard intercepts
+// WM_WINDOWPOSCHANGING and enforces a minimum outer size derived from the
+// desired scaled client area.
+// ---------------------------------------------------------------------------
+
+static WNDPROC g_sizeGuardOrigProc = nullptr;
+static HWND    g_sizeGuardHwnd     = nullptr;
+static std::atomic<int> g_sizeGuardMinClientW{0};
+static std::atomic<int> g_sizeGuardMinClientH{0};
+
+static LRESULT CALLBACK SizeGuardWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+  if (!g_sizeGuardOrigProc) {
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+  }
+
+  if (msg == WM_WINDOWPOSCHANGING && hwnd == g_sizeGuardHwnd) {
+    WINDOWPOS* wp = reinterpret_cast<WINDOWPOS*>(lParam);
+    const int minCW = g_sizeGuardMinClientW.load(std::memory_order_acquire);
+    const int minCH = g_sizeGuardMinClientH.load(std::memory_order_acquire);
+    if (!(wp->flags & SWP_NOSIZE) && minCW > 0 && minCH > 0) {
+      const LONG style   = GetWindowLongW(hwnd, GWL_STYLE);
+      const LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+      RECT rc{0, 0, (LONG)minCW, (LONG)minCH};
+      AdjustWindowRectEx(&rc, (DWORD)style, FALSE, (DWORD)exStyle);
+      const int minOW = (int)(rc.right - rc.left);
+      const int minOH = (int)(rc.bottom - rc.top);
+      if (wp->cx < minOW) wp->cx = minOW;
+      if (wp->cy < minOH) wp->cy = minOH;
+    }
+  }
+
+  if (msg == WM_GETMINMAXINFO && hwnd == g_sizeGuardHwnd) {
+    // Let the game's original handler run first, then enforce our minimum.
+    LRESULT res = CallWindowProcW(g_sizeGuardOrigProc, hwnd, msg, wParam, lParam);
+    MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+    const int minCW = g_sizeGuardMinClientW.load(std::memory_order_acquire);
+    const int minCH = g_sizeGuardMinClientH.load(std::memory_order_acquire);
+    if (minCW > 0 && minCH > 0) {
+      const LONG style   = GetWindowLongW(hwnd, GWL_STYLE);
+      const LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+      RECT rc{0, 0, (LONG)minCW, (LONG)minCH};
+      AdjustWindowRectEx(&rc, (DWORD)style, FALSE, (DWORD)exStyle);
+      const int minOW = (int)(rc.right - rc.left);
+      const int minOH = (int)(rc.bottom - rc.top);
+      if (mmi->ptMinTrackSize.x < minOW) mmi->ptMinTrackSize.x = minOW;
+      if (mmi->ptMinTrackSize.y < minOH) mmi->ptMinTrackSize.y = minOH;
+      if (mmi->ptMaxTrackSize.x < minOW) mmi->ptMaxTrackSize.x = minOW;
+      if (mmi->ptMaxTrackSize.y < minOH) mmi->ptMaxTrackSize.y = minOH;
+    }
+    return res;
+  }
+
+  return CallWindowProcW(g_sizeGuardOrigProc, hwnd, msg, wParam, lParam);
+}
+
+static bool InstallWindowSizeGuard(HWND hwnd, int minClientW, int minClientH) {
+  if (!hwnd || minClientW <= 0 || minClientH <= 0) {
+    return false;
+  }
+  if (g_sizeGuardHwnd == hwnd) {
+    // Already installed on this window; update minimum.
+    g_sizeGuardMinClientW.store(minClientW, std::memory_order_release);
+    g_sizeGuardMinClientH.store(minClientH, std::memory_order_release);
+    return true;
+  }
+
+  // Set the desired minimums before swapping the WndProc so the guard is
+  // immediately effective when the first message arrives.
+  g_sizeGuardMinClientW.store(minClientW, std::memory_order_release);
+  g_sizeGuardMinClientH.store(minClientH, std::memory_order_release);
+
+  LONG_PTR prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)&SizeGuardWndProc);
+  if (!prev) {
+    g_sizeGuardMinClientW.store(0, std::memory_order_release);
+    g_sizeGuardMinClientH.store(0, std::memory_order_release);
+    return false;
+  }
+  g_sizeGuardOrigProc = reinterpret_cast<WNDPROC>(prev);
+  g_sizeGuardHwnd = hwnd;
+  return true;
+}
+
+static void RemoveWindowSizeGuard() {
+  HWND hwnd = g_sizeGuardHwnd;
+  WNDPROC orig = g_sizeGuardOrigProc;
+  if (!hwnd || !orig) {
+    return;
+  }
+  // Only restore if our subclass is still the current procedure (another
+  // subclass might have chained on top).
+  LONG_PTR cur = GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+  if (cur == (LONG_PTR)&SizeGuardWndProc) {
+    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)orig);
+  }
+  g_sizeGuardOrigProc = nullptr;
+  g_sizeGuardHwnd = nullptr;
+  g_sizeGuardMinClientW.store(0, std::memory_order_release);
+  g_sizeGuardMinClientH.store(0, std::memory_order_release);
+}
+
+// ---------------------------------------------------------------------------
+
 static D3D12_FILTER FilterForMethod(twinshim::SurfaceScaleMethod m) {
   switch (m) {
     case twinshim::SurfaceScaleMethod::kPoint:

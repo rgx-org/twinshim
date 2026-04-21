@@ -9,7 +9,8 @@ static const char* kAddonBuildId = "TwinShim SampleAddon (rev=ringbuf-11-dualpso
 // This lets the shim's mouse-hook inference path (TryInferScaledWindow)
 // know it is safe to derive source dimensions from the current window size.
 static void SignalAddonReadyToShim() {
-  using NotifyFn = void(WINAPI*)();
+  // The shim exports use __cdecl (not WINAPI/stdcall) to avoid name decoration.
+  using NotifyFn = void(*)();
   HMODULE hShim = GetModuleHandleW(L"twinshim_shim.dll");
   if (!hShim) {
     hShim = GetModuleHandleW(L"twinshim_shim");

@@ -210,15 +210,18 @@ bool IsAddonReady() {
 
 extern "C" {
 
-__declspec(dllexport) void WINAPI TwinShim_RegisterScaledWindow(HWND hwnd, int srcW, int srcH, int dstW, int dstH, double scaleFactor) {
+// NOTE: These exports intentionally use __cdecl (no WINAPI) to avoid stdcall
+// name decoration on 32-bit builds (_Name@nn).  The addon DLL resolves them
+// by undecorated name via GetProcAddress.
+__declspec(dllexport) void TwinShim_RegisterScaledWindow(HWND hwnd, int srcW, int srcH, int dstW, int dstH, double scaleFactor) {
   twinshim::RegisterScaledWindow(hwnd, srcW, srcH, dstW, dstH, scaleFactor);
 }
 
-__declspec(dllexport) void WINAPI TwinShim_UnregisterScaledWindow(HWND hwnd) {
+__declspec(dllexport) void TwinShim_UnregisterScaledWindow(HWND hwnd) {
   twinshim::UnregisterScaledWindow(hwnd);
 }
 
-__declspec(dllexport) void WINAPI TwinShim_NotifyAddonReady() {
+__declspec(dllexport) void TwinShim_NotifyAddonReady() {
   twinshim::NotifyAddonReady();
 }
 
