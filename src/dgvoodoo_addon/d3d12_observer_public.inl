@@ -464,17 +464,18 @@
     sc.adapterID = adapterID;
 
     // Note: dgVoodoo often reports srcTextureState as COPY_DEST (0x400) because its
-    // D3D9→D3D12 translation finishes writing the frame via copy operations.  Previously
-    // we bailed out here, which caused dgVoodoo to fall back to its own bilinear present
-    // and made --scale-method point (and every other method) invisible.
-    // The barrier code further below (line ~650) already transitions any non-PSR state —
-    // including COPY_DEST — to PIXEL_SHADER_RESOURCE before sampling, so this is safe.
+    // D3D9→D3D12 translation writes the frame via copy operations.  We used to bail
+    // out here, but that caused dgVoodoo to fall back to its own bilinear present,
+    // making --scale-method invisible.  The barrier code further below transitions
+    // the texture to PIXEL_SHADER_RESOURCE before sampling.  To avoid a GPU race
+    // (our auto CL executing before dgVoodoo's copy CL), we must NOT force-flush
+    // the auto command list — see the AFlushUnlock call at the end of this path.
     {
       static std::atomic<bool> loggedCopyDest{false};
       if ((iCtx.srcTextureState & D3D12_RESOURCE_STATE_COPY_DEST) != 0) {
         bool expected = false;
         if (loggedCopyDest.compare_exchange_strong(expected, true)) {
-          Tracef("PresentBegin: srcTextureState includes COPY_DEST (%u); proceeding with barrier", (unsigned)iCtx.srcTextureState);
+          Tracef("PresentBegin: srcTextureState includes COPY_DEST (%u); proceeding (no force-flush)", (unsigned)iCtx.srcTextureState);
         }
       }
     }
@@ -896,7 +897,13 @@
 
       // Do NOT transition dst back: dgVoodoo can present directly from the swapchain texture when we return it.
 
-      (void)autoCl->AFlushUnlock(forceFlush);
+      // IMPORTANT: do NOT force-flush when we have drawn into the drawingTarget.
+      // Force-flushing submits our auto CL immediately, but dgVoodoo's internal
+      // copy-to-srcTex CL may not have been submitted yet.  If our CL executes
+      // first, the source texture is still uninitialised → black frame.  Passing
+      // false lets dgVoodoo batch-submit its copy CL first, then our draw CL,
+      // preserving correct GPU execution order.
+      (void)autoCl->AFlushUnlock(false);
 
       oCtx.pOutputTexture = dstTex;
       oCtx.outputTexSRVCPUHandle.ptr = 0;
@@ -1148,7 +1155,9 @@
       proxy.texState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     }
 
-    (void)autoCl->AFlushUnlock(forceFlush);
+    // Same rationale as the drawingTarget path: don't force-flush so dgVoodoo's
+    // copy-to-srcTex commands are submitted before our draw commands.
+    (void)autoCl->AFlushUnlock(false);
 
     // Output override.
     oCtx.pOutputTexture = proxy.pTexture;
