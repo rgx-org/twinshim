@@ -463,15 +463,20 @@
     SwapchainState& sc = itSc->second;
     sc.adapterID = adapterID;
 
-    // Safety: if dgVoodoo reports the source texture as COPY_DEST, it may still be under upload/copy.
-    // Sampling from it (even with a barrier) can be unstable on some drivers.
-    if ((iCtx.srcTextureState & D3D12_RESOURCE_STATE_COPY_DEST) != 0) {
-      static std::atomic<bool> logged{false};
-      bool expected = false;
-      if (logged.compare_exchange_strong(expected, true)) {
-        Tracef("PresentBegin: srcTextureState includes COPY_DEST (%u); skipping override", (unsigned)iCtx.srcTextureState);
+    // Note: dgVoodoo often reports srcTextureState as COPY_DEST (0x400) because its
+    // D3D9→D3D12 translation finishes writing the frame via copy operations.  Previously
+    // we bailed out here, which caused dgVoodoo to fall back to its own bilinear present
+    // and made --scale-method point (and every other method) invisible.
+    // The barrier code further below (line ~650) already transitions any non-PSR state —
+    // including COPY_DEST — to PIXEL_SHADER_RESOURCE before sampling, so this is safe.
+    {
+      static std::atomic<bool> loggedCopyDest{false};
+      if ((iCtx.srcTextureState & D3D12_RESOURCE_STATE_COPY_DEST) != 0) {
+        bool expected = false;
+        if (loggedCopyDest.compare_exchange_strong(expected, true)) {
+          Tracef("PresentBegin: srcTextureState includes COPY_DEST (%u); proceeding with barrier", (unsigned)iCtx.srcTextureState);
+        }
       }
-      return false;
     }
 
     // Fallback native-size capture: if dgVoodoo didn't provide a meaningful imageSize at swapchain creation,
