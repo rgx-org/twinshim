@@ -327,8 +327,18 @@
     }
 
     const twinshim::SurfaceScaleMethod method = GetScaleMethod();
-    // Point sampling is handled by our PSO (psoPoint) — do NOT return false here.
-    // Returning false would let dgVoodoo present with its default (bilinear) filtering.
+    if (method == twinshim::SurfaceScaleMethod::kPoint) {
+      // For point sampling, let dgVoodoo present normally.
+      static std::atomic<bool> logged{false};
+      bool expected = false;
+      if (logged.compare_exchange_strong(expected, true)) {
+        const twinshim::SurfaceScaleConfig& cfg = twinshim::GetSurfaceScaleConfig();
+        char raw[256] = {};
+        WideToUtf8BestEffort(cfg.methodRaw, raw, sizeof(raw));
+        Tracef("PresentBegin: method resolved to POINT; returning false (methodSpecified=%d methodValid=%d raw='%s')", cfg.methodSpecified ? 1 : 0, cfg.methodValid ? 1 : 0, raw);
+      }
+      return false;
+    }
 
     std::lock_guard<std::mutex> lock(mu_);
     if (!root_) {
