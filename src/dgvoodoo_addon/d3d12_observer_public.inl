@@ -7,6 +7,11 @@
     // Best-effort cleanup; actual releasing happens through swapchain/adapter callbacks.
     mainCb_ = nullptr;
     root_ = nullptr;
+    swapchainOverrideActive_ = false;
+    swapchainOrigW_ = 0;
+    swapchainOrigH_ = 0;
+    swapchainScaledW_ = 0;
+    swapchainScaledH_ = 0;
   }
 
   bool D3D12RootCreated(HMODULE /*hD3D12Dll*/, ID3D12Root* pD3D12Root) override {
@@ -22,6 +27,12 @@
     root_ = nullptr;
     adapters_.clear();
     swapchains_.clear();
+    // Reset swapchain override so the next session can override again.
+    swapchainOverrideActive_ = false;
+    swapchainOrigW_ = 0;
+    swapchainOrigH_ = 0;
+    swapchainScaledW_ = 0;
+    swapchainScaledH_ = 0;
   }
 
   bool D3D12BeginUsingAdapter(UInt32 adapterID) override {
@@ -147,9 +158,92 @@
     }
   }
 
-  bool D3D12CreateSwapchainHook(UInt32 /*adapterID*/, IDXGIFactory1* /*pDxgiFactory*/, IUnknown* /*pCommandQueue*/, const DXGI_SWAP_CHAIN_DESC& /*desc*/, IDXGISwapChain** /*ppSwapChain*/) override {
-    // We do not override swapchain creation.
-    return false;
+  bool D3D12CreateSwapchainHook(UInt32 adapterID, IDXGIFactory1* pDxgiFactory, IUnknown* pCommandQueue, const DXGI_SWAP_CHAIN_DESC& desc, IDXGISwapChain** ppSwapChain) override {
+    double scale = 1.0;
+    const bool scaling = IsScalingEnabled(&scale);
+
+    Tracef("CreateSwapchainHook: adapter=%u buf=%ux%u hwnd=%p fmt=%u count=%u effect=%u flags=0x%X windowed=%d scaling=%d scale=%.3f",
+           (unsigned)adapterID,
+           (unsigned)desc.BufferDesc.Width, (unsigned)desc.BufferDesc.Height,
+           (void*)desc.OutputWindow,
+           (unsigned)desc.BufferDesc.Format,
+           (unsigned)desc.BufferCount,
+           (unsigned)desc.SwapEffect,
+           (unsigned)desc.Flags,
+           desc.Windowed ? 1 : 0,
+           scaling ? 1 : 0, scale);
+
+    if (!scaling || !ppSwapChain || !pDxgiFactory || !pCommandQueue) {
+      return false;
+    }
+
+    const UINT origW = desc.BufferDesc.Width;
+    const UINT origH = desc.BufferDesc.Height;
+
+    if (origW <= 1 || origH <= 1) {
+      Tracef("CreateSwapchainHook: desc dimensions %ux%u too small, not overriding", origW, origH);
+      return false;
+    }
+
+    const UINT scaledW = CalcScaledUInt(origW, scale);
+    const UINT scaledH = CalcScaledUInt(origH, scale);
+
+    if (scaledW <= origW && scaledH <= origH) {
+      Tracef("CreateSwapchainHook: scaled dims %ux%u not larger than orig, not overriding", scaledW, scaledH);
+      return false;
+    }
+
+    // Resize the window BEFORE creating the swapchain so the DXGI present is 1:1
+    // (swapchain buffer size == window client size, no bilinear stretch needed).
+    if (desc.OutputWindow && desc.Windowed) {
+      const bool guardOk = InstallWindowSizeGuard(desc.OutputWindow, (int)scaledW, (int)scaledH);
+      const bool resizeOk = ResizeWindowClient(desc.OutputWindow, (int)scaledW, (int)scaledH);
+      Tracef("CreateSwapchainHook: pre-resize hwnd=%p to %ux%u guard=%d resize=%d",
+             (void*)desc.OutputWindow, scaledW, scaledH, guardOk ? 1 : 0, resizeOk ? 1 : 0);
+
+      // Mark resize as done so MaybeResizeWindowOnce doesn't duplicate.
+      didResize_.store(true, std::memory_order_release);
+      resizedHwnd_ = desc.OutputWindow;
+      desiredClientW_ = (int)scaledW;
+      desiredClientH_ = (int)scaledH;
+      resizeRetryCount_ = 0;
+      flushCountdown_ = 120;
+
+      // Publish scale mapping to the shim for mouse coordinate remapping.
+      {
+        using RegisterFn = void(*)(HWND, int, int, int, int, double);
+        HMODULE hShim = GetModuleHandleW(L"twinshim_shim.dll");
+        if (!hShim) hShim = GetModuleHandleW(L"twinshim_shim");
+        if (hShim) {
+          auto fn = reinterpret_cast<RegisterFn>(GetProcAddress(hShim, "TwinShim_RegisterScaledWindow"));
+          if (fn) {
+            fn(desc.OutputWindow, (int)origW, (int)origH, (int)scaledW, (int)scaledH, scale);
+            Tracef("CreateSwapchainHook: published scale mapping to shim");
+          }
+        }
+      }
+    }
+
+    DXGI_SWAP_CHAIN_DESC modDesc = desc;
+    modDesc.BufferDesc.Width = scaledW;
+    modDesc.BufferDesc.Height = scaledH;
+
+    HRESULT hr = pDxgiFactory->CreateSwapChain(pCommandQueue, &modDesc, ppSwapChain);
+    if (FAILED(hr) || !*ppSwapChain) {
+      Tracef("CreateSwapchainHook: CreateSwapChain(%ux%u) failed hr=0x%08lX; falling back to dgVoodoo default",
+             scaledW, scaledH, (unsigned long)hr);
+      return false;
+    }
+
+    swapchainOverrideActive_ = true;
+    swapchainOrigW_ = origW;
+    swapchainOrigH_ = origH;
+    swapchainScaledW_ = scaledW;
+    swapchainScaledH_ = scaledH;
+
+    Tracef("CreateSwapchainHook: created scaled swapchain %ux%u -> %ux%u (sc=%p)",
+           origW, origH, scaledW, scaledH, (void*)*ppSwapChain);
+    return true;
   }
 
   void D3D12SwapchainCreated(UInt32 adapterID, ID3D12Swapchain* pSwapchain, const ID3D12Root::SwapchainData& swapchainData) override {
@@ -170,14 +264,22 @@
     st.h = (UINT)swapchainData.imagePresentationSize.cy;
     st.fmt = swapchainData.format;
 
-    const UINT iw = (UINT)swapchainData.imageSize.cx;
-    const UINT ih = (UINT)swapchainData.imageSize.cy;
-    if (iw > 1 && ih > 1) {
-      st.nativeW = iw;
-      st.nativeH = ih;
-    } else if (st.w > 1 && st.h > 1) {
-      st.nativeW = st.w;
-      st.nativeH = st.h;
+    // When we overrode the DXGI swapchain to a larger size, dgVoodoo may report
+    // the scaled dimensions as imageSize/presentationSize.  Force nativeW/H to
+    // the original game resolution so the shader UV mapping is correct.
+    if (swapchainOverrideActive_ && swapchainOrigW_ > 1 && swapchainOrigH_ > 1) {
+      st.nativeW = swapchainOrigW_;
+      st.nativeH = swapchainOrigH_;
+    } else {
+      const UINT iw = (UINT)swapchainData.imageSize.cx;
+      const UINT ih = (UINT)swapchainData.imageSize.cy;
+      if (iw > 1 && ih > 1) {
+        st.nativeW = iw;
+        st.nativeH = ih;
+      } else if (st.w > 1 && st.h > 1) {
+        st.nativeW = st.w;
+        st.nativeH = st.h;
+      }
     }
     swapchains_[pSwapchain] = st;
   }
@@ -209,15 +311,22 @@
       it->second.fmt = swapchainData.format;
 
       // Capture native size once (first meaningful value wins).
+      // When the DXGI swapchain was overridden to scaled dimensions, force the
+      // native size to the original game resolution.
       if (it->second.nativeW == 0 || it->second.nativeH == 0) {
-        const UINT iw = (UINT)swapchainData.imageSize.cx;
-        const UINT ih = (UINT)swapchainData.imageSize.cy;
-        if (iw > 1 && ih > 1) {
-          it->second.nativeW = iw;
-          it->second.nativeH = ih;
-        } else if (it->second.w > 1 && it->second.h > 1) {
-          it->second.nativeW = it->second.w;
-          it->second.nativeH = it->second.h;
+        if (swapchainOverrideActive_ && swapchainOrigW_ > 1 && swapchainOrigH_ > 1) {
+          it->second.nativeW = swapchainOrigW_;
+          it->second.nativeH = swapchainOrigH_;
+        } else {
+          const UINT iw = (UINT)swapchainData.imageSize.cx;
+          const UINT ih = (UINT)swapchainData.imageSize.cy;
+          if (iw > 1 && ih > 1) {
+            it->second.nativeW = iw;
+            it->second.nativeH = ih;
+          } else if (it->second.w > 1 && it->second.h > 1) {
+            it->second.nativeW = it->second.w;
+            it->second.nativeH = it->second.h;
+          }
         }
       }
     }
@@ -392,6 +501,26 @@
     // Preferred fast-path: if dgVoodoo provides a drawing target (swapchain RT) then draw directly into it.
     // If we return that same dst texture as output, dgVoodoo can skip its own postprocess copy.
     const bool hasDrawingTarget = (iCtx.drawingTarget.pDstTexture != nullptr) && (iCtx.drawingTarget.rtvCPUHandle.ptr != 0);
+
+    {
+      static std::atomic<bool> loggedPath{false};
+      bool expected = false;
+      if (loggedPath.compare_exchange_strong(expected, true)) {
+        D3D12_RESOURCE_DESC dtDesc{};
+        if (hasDrawingTarget && iCtx.drawingTarget.pDstTexture) {
+          dtDesc = iCtx.drawingTarget.pDstTexture->GetDesc();
+        }
+        Tracef("PresentBegin: path=%s dstTex=%p dstTexSize=%llux%u dstRect=[%ld,%ld-%ld,%ld] method=%u",
+               hasDrawingTarget ? "drawingTarget" : "proxy",
+               hasDrawingTarget ? (void*)iCtx.drawingTarget.pDstTexture : nullptr,
+               hasDrawingTarget ? (unsigned long long)dtDesc.Width : 0ULL,
+               hasDrawingTarget ? (unsigned)dtDesc.Height : 0u,
+               (long)iCtx.drawingTarget.dstRect.left, (long)iCtx.drawingTarget.dstRect.top,
+               (long)iCtx.drawingTarget.dstRect.right, (long)iCtx.drawingTarget.dstRect.bottom,
+               (unsigned)method);
+      }
+    }
+
     if (hasDrawingTarget) {
       ID3D12Resource* dstTex = iCtx.drawingTarget.pDstTexture;
       UINT dstStateBefore = iCtx.drawingTarget.dstTextureState;
@@ -452,10 +581,6 @@
         }
       }
 
-      // If dgVoodoo already expanded the source image to the presentation size, then our draw is 1:1 and
-      // linear filtering won't be visible. In that case do a 2-pass filter:
-      //   1) downsample to native size with point sampling
-      //   2) upsample to destination with bilinear sampling
       const LONG srcRectW = (iCtx.srcRect.right > iCtx.srcRect.left) ? (iCtx.srcRect.right - iCtx.srcRect.left) : 0;
       const LONG srcRectH = (iCtx.srcRect.bottom > iCtx.srcRect.top) ? (iCtx.srcRect.bottom - iCtx.srcRect.top) : 0;
       const bool srcMatchesPres = (srcRectW > 0 && srcRectH > 0 && (UINT)srcRectW == sc.w && (UINT)srcRectH == sc.h);
@@ -464,8 +589,11 @@
       // any filtering won't be visible. In that case do a 2-pass filter:
       //   1) downsample to native size with point sampling
       //   2) upsample to destination with the requested method
-      const bool wantTwoPassAny = (method != twinshim::SurfaceScaleMethod::kPoint) &&
-                  srcMatchesPres &&
+      // This applies to ALL methods including point: when the swapchain is overridden to the scaled size,
+      // dgVoodoo expands the source with its own bilinear stretch.  Without two-pass, point would just
+      // do a 1:1 copy of that bilinear result.  Two-pass recovers the native pixels via point downsample,
+      // then our point upsample gives crisp nearest-neighbor scaling.
+      const bool wantTwoPassAny = srcMatchesPres &&
                   (sc.nativeW > 0 && sc.nativeH > 0) &&
                   (sc.w > sc.nativeW + 1 || sc.h > sc.nativeH + 1) &&
                   IsTwoPassEnabledByEnv();
@@ -475,14 +603,20 @@
         const int n = logCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (n <= 10) {
           Tracef(
-              "present cfg: wantTwoPass=%d native=%ux%u pres=%ux%u srcRect=%ldx%ld",
+              "present cfg: wantTwoPass=%d native=%ux%u pres=%ux%u srcRect=%ldx%ld scOverride=%d scOrig=%ux%u scScaled=%ux%u method=%u",
               wantTwoPassAny ? 1 : 0,
               (unsigned)sc.nativeW,
               (unsigned)sc.nativeH,
               (unsigned)sc.w,
               (unsigned)sc.h,
               (long)srcRectW,
-              (long)srcRectH);
+              (long)srcRectH,
+              swapchainOverrideActive_ ? 1 : 0,
+              (unsigned)swapchainOrigW_,
+              (unsigned)swapchainOrigH_,
+              (unsigned)swapchainScaledW_,
+              (unsigned)swapchainScaledH_,
+              (unsigned)method);
         }
       }
 
@@ -552,12 +686,32 @@
       ID3D12PipelineState* psoOnePass = PipelineForMethod(*ad, method);
       cl->SetPipelineState(psoOnePass ? psoOnePass : ad->psoPoint);
 
-      const LONG dstL = iCtx.drawingTarget.dstRect.left;
-      const LONG dstT = iCtx.drawingTarget.dstRect.top;
-      const LONG dstR = iCtx.drawingTarget.dstRect.right;
-      const LONG dstB = iCtx.drawingTarget.dstRect.bottom;
-      const LONG dstW = (dstR > dstL) ? (dstR - dstL) : (LONG)sc.w;
-      const LONG dstH = (dstB > dstT) ? (dstB - dstT) : (LONG)sc.h;
+      LONG dstL = iCtx.drawingTarget.dstRect.left;
+      LONG dstT = iCtx.drawingTarget.dstRect.top;
+      LONG dstR = iCtx.drawingTarget.dstRect.right;
+      LONG dstB = iCtx.drawingTarget.dstRect.bottom;
+      LONG dstW = (dstR > dstL) ? (dstR - dstL) : (LONG)sc.w;
+      LONG dstH = (dstB > dstT) ? (dstB - dstT) : (LONG)sc.h;
+
+      // If we created the DXGI swapchain at the scaled size, dgVoodoo may still
+      // report dstRect at the original game resolution.  Override the viewport
+      // to cover the full scaled swapchain so our shader performs real scaling
+      // instead of a 1:1 copy (which would leave DXGI to bilinear-stretch later).
+      if (swapchainOverrideActive_ && swapchainScaledW_ > 0 && swapchainScaledH_ > 0) {
+        if ((UINT)dstW <= swapchainOrigW_ && (UINT)dstH <= swapchainOrigH_) {
+          static std::atomic<bool> loggedVpOverride{false};
+          bool expectedVp = false;
+          if (loggedVpOverride.compare_exchange_strong(expectedVp, true)) {
+            Tracef("PresentBegin: viewport override %ldx%ld -> %ux%u (scaled swapchain active)",
+                   (long)dstW, (long)dstH, (unsigned)swapchainScaledW_, (unsigned)swapchainScaledH_);
+          }
+          dstL = 0;
+          dstT = 0;
+          dstW = (LONG)swapchainScaledW_;
+          dstH = (LONG)swapchainScaledH_;
+        }
+      }
+
       D3D12_VIEWPORT vp{};
       vp.TopLeftX = (float)dstL;
       vp.TopLeftY = (float)dstT;
@@ -711,9 +865,9 @@
           sc.nativeTexState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         }
 
-        // Pass 2 uses linear PSO (no pipeline rebuild here; avoids mid-frame release/recreate).
+        // Pass 2 uses the requested method's PSO (point, linear, cubic, etc.).
         ID3D12PipelineState* psoPass2 = PipelineForMethod(*ad, method);
-        cl->SetPipelineState(psoPass2 ? psoPass2 : ad->psoLinear);
+        cl->SetPipelineState(psoPass2 ? psoPass2 : ad->psoPoint);
 
         // Restore dst viewport/scissor.
         cl->RSSetViewports(1, &vp);
@@ -875,12 +1029,22 @@
     }
 
     // Viewport + scissor to destination rect (handles aspect-ratio letterboxing cases).
-    const LONG dstL = iCtx.drawingTarget.dstRect.left;
-    const LONG dstT = iCtx.drawingTarget.dstRect.top;
-    const LONG dstR = iCtx.drawingTarget.dstRect.right;
-    const LONG dstB = iCtx.drawingTarget.dstRect.bottom;
-    const LONG dstW = (dstR > dstL) ? (dstR - dstL) : (LONG)sc.w;
-    const LONG dstH = (dstB > dstT) ? (dstB - dstT) : (LONG)sc.h;
+    LONG dstL = iCtx.drawingTarget.dstRect.left;
+    LONG dstT = iCtx.drawingTarget.dstRect.top;
+    LONG dstR = iCtx.drawingTarget.dstRect.right;
+    LONG dstB = iCtx.drawingTarget.dstRect.bottom;
+    LONG dstW = (dstR > dstL) ? (dstR - dstL) : (LONG)sc.w;
+    LONG dstH = (dstB > dstT) ? (dstB - dstT) : (LONG)sc.h;
+
+    // Same scaled-swapchain viewport override as the drawingTarget path.
+    if (swapchainOverrideActive_ && swapchainScaledW_ > 0 && swapchainScaledH_ > 0) {
+      if ((UINT)dstW <= swapchainOrigW_ && (UINT)dstH <= swapchainOrigH_) {
+        dstL = 0;
+        dstT = 0;
+        dstW = (LONG)swapchainScaledW_;
+        dstH = (LONG)swapchainScaledH_;
+      }
+    }
 
     D3D12_VIEWPORT vp{};
     vp.TopLeftX = (float)dstL;

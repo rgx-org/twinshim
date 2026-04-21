@@ -396,10 +396,6 @@
       ad.psoLanczos->Release();
       ad.psoLanczos = nullptr;
     }
-      if (ad.psLanczos3) {
-        ad.psLanczos3->Release();
-        ad.psLanczos3 = nullptr;
-      }
     if (ad.psoLanczos3) {
       ad.psoLanczos3->Release();
       ad.psoLanczos3 = nullptr;
@@ -656,8 +652,8 @@
       ID3DBlob* tmpPsLinear = nullptr;
       ID3DBlob* tmpPsCr = nullptr;
       ID3DBlob* tmpPsBic = nullptr;
-        ID3DBlob* tmpPsLan = nullptr;
-        ID3DBlob* tmpPsLan3 = nullptr;
+      ID3DBlob* tmpPsLan = nullptr;
+      ID3DBlob* tmpPsLan3 = nullptr;
       ID3DBlob* tmpPsPix = nullptr;
       if (!CompileHlsl(kHlsl, "VS", "vs_5_1", &tmpVs) || !CompileHlsl(kHlsl, "PSPoint", "ps_5_1", &tmpPsPoint) ||
           !CompileHlsl(kHlsl, "PSLinear", "ps_5_1", &tmpPsLinear) || !CompileHlsl(kHlsl, "PSCatmullRom", "ps_5_1", &tmpPsCr) ||

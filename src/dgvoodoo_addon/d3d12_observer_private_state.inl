@@ -13,4 +13,14 @@
   uint32_t resizeRetryCount_ = 0;
   uint32_t flushCountdown_ = 0;
 
+  // Swapchain override tracking (set in D3D12CreateSwapchainHook).
+  // When we create the DXGI swapchain at the scaled size, dgVoodoo may still
+  // report dstRect at the original game resolution.  We track both sizes so
+  // PresentBegin can use the correct viewport.
+  bool swapchainOverrideActive_ = false;
+  UINT swapchainOrigW_ = 0;   // Original desc dimensions from the hook.
+  UINT swapchainOrigH_ = 0;
+  UINT swapchainScaledW_ = 0;  // Scaled dimensions we created the swapchain with.
+  UINT swapchainScaledH_ = 0;
+
   // No global D3D12 objects; state is per-adapter/per-swapchain.
