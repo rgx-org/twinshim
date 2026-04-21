@@ -20,7 +20,11 @@ if(MSVC
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dgvoodoo_addon_sdk/Lib/x86/dgVoodooAddon.lib")
   set(_DGVOODOO_ADDON_DEFAULT ON)
 endif()
-option(HKLM_WRAPPER_ENABLE_DGVOODOO_ADDON "Build dgVoodoo AddOn DLL (requires dgVoodoo AddOn SDK)" ${_DGVOODOO_ADDON_DEFAULT})
+# Use FORCE so that installing (or removing) the SDK takes effect on the next
+# configure without requiring a cache delete.  Plain option() is sticky and
+# would keep the value from the first configure forever.
+set(HKLM_WRAPPER_ENABLE_DGVOODOO_ADDON ${_DGVOODOO_ADDON_DEFAULT} CACHE BOOL
+    "Build dgVoodoo AddOn DLL (requires dgVoodoo AddOn SDK)" FORCE)
 
 if(MSVC AND HKLM_WRAPPER_MSVC_STATIC_RUNTIME)
   # This must be set before targets are created; targets snapshot the current
