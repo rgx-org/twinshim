@@ -171,6 +171,8 @@ Debugging:
 - The shim remaps `GetCursorPos` while the cursor is inside the scaled window client area (common for games that poll cursor position instead of using `WM_MOUSEMOVE`).
 
 ### Building the dgVoodoo AddOn DLL
+https://github.com/dege-diosg/dgVoodoo2/releases  
+Example: `dgVoodooAPI_287.zip`
 
 1. Unpack the dgVoodoo SDK under:
   - `third_party/dgvoodoo_addon_sdk/`
