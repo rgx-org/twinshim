@@ -14,6 +14,7 @@ namespace twinshim {
 
 struct D3DDeviceInfo {
   std::wstring name;
+  std::wstring description; // driver-provided description from D3D7 EnumDevices
   GUID deviceGuid;
 };
 

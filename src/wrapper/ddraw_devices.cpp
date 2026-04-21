@@ -153,7 +153,17 @@ static HRESULT CALLBACK DeviceEnumCallback(
   auto* devices = static_cast<std::vector<D3DDeviceInfo>*>(lpContext);
 
   D3DDeviceInfo info;
-  info.name = SimplifyDeviceName(AnsiToWide(lpDeviceName));
+  info.description = AnsiToWide(lpDeviceDescription);
+
+  // Build a display name that includes the driver description when it adds
+  // useful information beyond the generic device-type name (e.g. "Direct3D
+  // HAL (NVIDIA GeForce RTX 3080)" instead of just "Direct3D HAL").
+  std::wstring simpleName = SimplifyDeviceName(AnsiToWide(lpDeviceName));
+  if (!info.description.empty() && info.description != simpleName) {
+    info.name = simpleName + L" (" + info.description + L")";
+  } else {
+    info.name = simpleName;
+  }
 
   if (lpD3DDeviceDesc) {
     info.deviceGuid = lpD3DDeviceDesc->deviceGUID;

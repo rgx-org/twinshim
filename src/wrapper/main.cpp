@@ -577,11 +577,13 @@ static int HandleDeviceCommands() {
     for (size_t j = 0; j < devices.size(); j++) {
       const auto& dev = devices[j];
       const std::string name = JsonEscape(WideToUtf8(dev.name));
+      const std::string desc = JsonEscape(WideToUtf8(dev.description));
       const std::string guid = JsonEscape(WideToUtf8(FormatGuid(dev.deviceGuid)));
       const std::string hex  = JsonEscape(WideToUtf8(FormatGuidAsRegHex(dev.deviceGuid)));
 
       json += "  {\n";
       json += "    \"name\": \"" + name + "\",\n";
+      json += "    \"description\": \"" + desc + "\",\n";
       json += "    \"guid\": \"" + guid + "\",\n";
       json += "    \"hex\": \""  + hex + "\"\n";
       json += "  }";
@@ -608,6 +610,9 @@ static int HandleDeviceCommands() {
       const auto& dev = devices[j];
       output += L"Device " + std::to_wstring(j) + L":\n";
       output += L"  Name: " + dev.name + L"\n";
+      if (!dev.description.empty()) {
+        output += L"  Desc: " + dev.description + L"\n";
+      }
       output += L"  GUID: " + FormatGuid(dev.deviceGuid) + L"\n";
       output += L"  Hex:  " + FormatGuidAsRegHex(dev.deviceGuid) + L"\n";
       if (j + 1 < devices.size()) {
