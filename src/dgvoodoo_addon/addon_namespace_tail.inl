@@ -29,6 +29,14 @@ static void SignalAddonReadyToShim() {
 }
 
 static bool AddonInitCommon(dgVoodoo::IAddonMainCallback* pAddonMain) {
+  // Prevent double registration.  dgVoodoo calls both AddOnInit and AddonInit;
+  // if we register the same observer twice, AddonExitCommon only unregisters
+  // once, leaving a dangling registration that blocks clean shutdown.
+  if (g_registered.load(std::memory_order_acquire)) {
+    Tracef("AddOnInit/AddOnInit called main=%p (already registered; skipping) (%s)", (void*)pAddonMain, kAddonBuildId);
+    return true;
+  }
+
   // Short-circuit completely unless scaling is explicitly enabled via --scale.
   // This avoids registering for dgVoodoo callbacks and prevents any add-on work.
   double scale = 1.0;
@@ -68,6 +76,11 @@ static void AddonExitCommon() {
   }
 
   Tracef("AddOnExit/AddOnExit called (%s)", kAddonBuildId);
+
+  // Remove the window size guard BEFORE unregistering so the subclass doesn't
+  // outlive the addon and interfere with process exit / window destruction.
+  RemoveWindowSizeGuard();
+
   if (g_main) {
     g_main->UnregisterForCallback(IID_D3D12RootObserver, &g_observer);
   }
