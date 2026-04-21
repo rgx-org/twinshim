@@ -122,29 +122,6 @@ static std::wstring AnsiToWide(const char* ansi) {
 // EnumDevices callback
 // =========================================================================
 
-// Strip capability qualifiers like "T&L" from device names so that e.g.
-// "Direct3D T&L HAL" becomes "Direct3D HAL".
-static std::wstring SimplifyDeviceName(const std::wstring& name) {
-  std::wstring out = name;
-
-  // Remove common capability prefixes/infixes.
-  const wchar_t* patterns[] = {L"T&L ", L"TnL ", L"T&L", L"TnL"};
-  for (const auto* pat : patterns) {
-    size_t pos = out.find(pat);
-    if (pos != std::wstring::npos) {
-      out.erase(pos, wcslen(pat));
-    }
-  }
-
-  // Collapse any resulting double spaces.
-  size_t pos;
-  while ((pos = out.find(L"  ")) != std::wstring::npos) {
-    out.erase(pos, 1);
-  }
-
-  return out;
-}
-
 static HRESULT CALLBACK DeviceEnumCallback(
     LPSTR                lpDeviceDescription,
     LPSTR                lpDeviceName,
@@ -153,7 +130,7 @@ static HRESULT CALLBACK DeviceEnumCallback(
   auto* devices = static_cast<std::vector<D3DDeviceInfo>*>(lpContext);
 
   D3DDeviceInfo info;
-  info.name = SimplifyDeviceName(AnsiToWide(lpDeviceName));
+  info.name = AnsiToWide(lpDeviceName);
   info.description = AnsiToWide(lpDeviceDescription);
 
   if (lpD3DDeviceDesc) {
@@ -162,10 +139,13 @@ static HRESULT CALLBACK DeviceEnumCallback(
     ZeroMemory(&info.deviceGuid, sizeof(info.deviceGuid));
   }
 
-  // Deduplicate: skip if we already have an entry with this GUID.
-  for (const auto& existing : *devices) {
+  // Deduplicate: later enumerations tend to carry more descriptive info,
+  // so overwrite any earlier entry that shares the same GUID.
+  for (auto& existing : *devices) {
     if (std::memcmp(&existing.deviceGuid, &info.deviceGuid, sizeof(GUID)) == 0) {
-      return 1; // already recorded -- continue enumeration
+      existing.name = std::move(info.name);
+      existing.description = std::move(info.description);
+      return 1; // updated -- continue enumeration
     }
   }
 
@@ -277,14 +257,14 @@ static bool IsGenericD3D7Description(const std::wstring& desc) {
 }
 
 // Build the composite display name for a device.
-//   simpleName  = "Direct3D HAL" (the simplified device-type name)
+//   deviceName  = "Direct3D HAL" (the device-type name from EnumDevices)
 //   description = the best available description for parenthetical display
-static std::wstring BuildDisplayName(const std::wstring& simpleName,
+static std::wstring BuildDisplayName(const std::wstring& deviceName,
                                      const std::wstring& description) {
-  if (!description.empty() && description != simpleName) {
-    return simpleName + L" (" + description + L")";
+  if (!description.empty() && description != deviceName) {
+    return deviceName + L" (" + description + L")";
   }
-  return simpleName;
+  return deviceName;
 }
 
 } // anonymous namespace
